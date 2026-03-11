@@ -1,0 +1,254 @@
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/700.css';
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Pure black & white theme — no colored accents */
+    --background: 0 0% 5%;
+    --foreground: 0 0% 93%;
+
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 93%;
+
+    --popover: 0 0% 9%;
+    --popover-foreground: 0 0% 93%;
+
+    /* White primary — NOT cyan, NOT green */
+    --primary: 0 0% 90%;
+    --primary-foreground: 0 0% 5%;
+
+    --secondary: 0 0% 11%;
+    --secondary-foreground: 0 0% 80%;
+
+    --muted: 0 0% 11%;
+    --muted-foreground: 0 0% 45%;
+
+    --accent: 0 0% 13%;
+    --accent-foreground: 0 0% 93%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 0 0% 15%;
+    --input: 0 0% 15%;
+    --ring: 0 0% 40%;
+
+    --radius: 0.75rem;
+
+    /* Rainbow colors — used ONLY for charts and status badges */
+    --cyber-cyan: 190 100% 50%;
+    --cyber-green: 142 71% 45%;
+    --cyber-yellow: 45 93% 58%;
+    --cyber-orange: 25 95% 53%;
+    --cyber-red: 0 72% 51%;
+    --cyber-purple: 270 76% 60%;
+
+    /* Minimal/no glow effects */
+    --glow-cyan: none;
+    --glow-green: 0 0 6px hsl(142 71% 45% / 0.15);
+    --glow-red: 0 0 6px hsl(0 72% 51% / 0.15);
+    --glow-yellow: 0 0 6px hsl(45 93% 58% / 0.15);
+
+    /* Neutral gradients — no color tint */
+    --gradient-cyber: linear-gradient(135deg, hsl(0 0% 9% / 0.2), hsl(0 0% 7% / 0.2));
+    --gradient-card: linear-gradient(180deg, hsl(0 0% 8%), hsl(0 0% 7%));
+    --gradient-border: linear-gradient(135deg, hsl(0 0% 18% / 0.1), hsl(0 0% 14% / 0.1));
+
+    /* Sidebar — same dark neutral */
+    --sidebar-background: 0 0% 5%;
+    --sidebar-foreground: 0 0% 93%;
+    --sidebar-primary: 0 0% 90%;
+    --sidebar-primary-foreground: 0 0% 5%;
+    --sidebar-accent: 0 0% 11%;
+    --sidebar-accent-foreground: 0 0% 93%;
+    --sidebar-border: 0 0% 15%;
+    --sidebar-ring: 0 0% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer components {
+
+  /* Card — clean, no glow */
+  .cyber-card {
+    @apply relative bg-card rounded-lg border border-border overflow-hidden;
+    background: var(--gradient-card);
+  }
+
+  .cyber-card::before {
+    content: '';
+    @apply absolute inset-0 rounded-lg opacity-0 transition-opacity duration-300;
+    background: var(--gradient-cyber);
+  }
+
+  .cyber-card:hover::before {
+    @apply opacity-100;
+  }
+
+  /* Border — no glow on hover */
+  .glow-border {
+    @apply relative;
+  }
+
+  .glow-border::after {
+    content: '';
+    @apply absolute inset-0 rounded-lg pointer-events-none;
+    opacity: 0;
+  }
+
+  .glow-border:hover::after {
+    opacity: 0;
+  }
+
+  /* Status badges — keep colored for semantic meaning */
+  .status-normal {
+    @apply bg-cyber-green/20 text-cyber-green border-cyber-green/30;
+    box-shadow: var(--glow-green);
+  }
+
+  .status-warning {
+    @apply bg-cyber-yellow/20 text-cyber-yellow border-cyber-yellow/30;
+    box-shadow: var(--glow-yellow);
+  }
+
+  .status-danger {
+    @apply bg-cyber-red/20 text-cyber-red border-cyber-red/30;
+    box-shadow: var(--glow-red);
+  }
+
+  /* Pulse animation */
+  .pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+
+    0%,
+    100% {
+      opacity: 1;
+    }
+
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  /* Scan line — disabled */
+  .scan-line {
+    @apply relative overflow-hidden;
+  }
+
+  .scan-line::after {
+    display: none;
+  }
+
+  /* Grid pattern — very subtle */
+  .grid-pattern {
+    background-image:
+      linear-gradient(hsl(0 0% 14% / 0.12) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(0 0% 14% / 0.12) 1px, transparent 1px);
+    background-size: 50px 50px;
+  }
+
+  .counter {
+    @apply font-mono tabular-nums;
+  }
+
+  /* No neon text glow */
+  .neon-text {
+    text-shadow: none;
+  }
+
+  .chart-tooltip {
+    @apply bg-popover border border-border rounded-md px-3 py-2 text-sm shadow-lg;
+  }
+}
+
+@layer utilities {
+  .bg-cyber-cyan {
+    background-color: hsl(var(--cyber-cyan));
+  }
+
+  .bg-cyber-green {
+    background-color: hsl(var(--cyber-green));
+  }
+
+  .bg-cyber-yellow {
+    background-color: hsl(var(--cyber-yellow));
+  }
+
+  .bg-cyber-orange {
+    background-color: hsl(var(--cyber-orange));
+  }
+
+  .bg-cyber-red {
+    background-color: hsl(var(--cyber-red));
+  }
+
+  .bg-cyber-purple {
+    background-color: hsl(var(--cyber-purple));
+  }
+
+  .text-cyber-cyan {
+    color: hsl(var(--cyber-cyan));
+  }
+
+  .text-cyber-green {
+    color: hsl(var(--cyber-green));
+  }
+
+  .text-cyber-yellow {
+    color: hsl(var(--cyber-yellow));
+  }
+
+  .text-cyber-orange {
+    color: hsl(var(--cyber-orange));
+  }
+
+  .text-cyber-red {
+    color: hsl(var(--cyber-red));
+  }
+
+  .text-cyber-purple {
+    color: hsl(var(--cyber-purple));
+  }
+
+  .border-cyber-cyan {
+    border-color: hsl(var(--cyber-cyan));
+  }
+
+  .border-cyber-green {
+    border-color: hsl(var(--cyber-green));
+  }
+
+  .border-cyber-yellow {
+    border-color: hsl(var(--cyber-yellow));
+  }
+
+  .border-cyber-red {
+    border-color: hsl(var(--cyber-red));
+  }
+}
