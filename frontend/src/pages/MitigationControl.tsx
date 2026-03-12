@@ -15,10 +15,25 @@ import {
 import { cn } from "@/lib/utils";
 import { useMemo, useRef } from "react";
 
+const ATTACK_TYPE_TO_PROTOCOL: Record<string, string> = {
+  SYN_FLOOD: "TCP",
+  UDP_FLOOD: "UDP",
+  ICMP_FLOOD: "ICMP",
+  DNS_AMP: "UDP",
+  NTP_AMP: "UDP",
+  SLOWLORIS: "TCP",
+  PORT_SCAN: "TCP/UDP",
+  LAND: "TCP",
+  SMURF: "ICMP",
+  NONE: "-",
+  UNKNOWN: "-",
+};
+
 const MitigationControl = () => {
   const ws = useSentinelWebSocket();
   const timelineRef = useRef<HTMLDivElement>(null);
-  const autoMitigation = ws.mitigationStatus?.auto_mitigation_enabled ?? true;
+  const mitigationStatusKnown = ws.mitigationStatus !== null;
+  const autoMitigation = ws.mitigationStatus?.auto_mitigation_enabled ?? false;
 
   const stats = [
     { label: "Blocked IPs", value: ws.mitigationStatus?.total_blocked ?? 0, icon: Ban, color: "text-cyber-red", bgColor: "bg-cyber-red/10" },
@@ -30,28 +45,27 @@ const MitigationControl = () => {
   const kernelDrops = ws.mitigationStatus?.kernel_dropping_enabled ?? false;
   const sdnStatus = ws.mitigationStatus?.sdn_connected;
 
-  const attackTypeToProtocol: Record<string, string> = {
-    SYN_FLOOD: "TCP",
-    UDP_FLOOD: "UDP",
-    ICMP_FLOOD: "ICMP",
-    DNS_AMP: "UDP",
-    NTP_AMP: "UDP",
-    SLOWLORIS: "TCP",
-    PORT_SCAN: "TCP/UDP",
-    LAND: "TCP",
-    SMURF: "ICMP",
-    NONE: "-",
-    UNKNOWN: "-",
-  };
+  // Merge live stream events with the persisted history loaded from the SQLite
+  // event log on mount. Live events take precedence; persisted events fill in
+  // the gaps after a page reload. Deduplication uses timestamp + source-ip.
+  const mergedActivities = useMemo(() => {
+    const seen = new Set<string>();
+    return [...ws.activityLog, ...ws.persistedEvents].filter((e) => {
+      const key = `${e.timestamp}-${e.src_ip}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [ws.activityLog, ws.persistedEvents]);
 
   const timelineEntries = useMemo(() => {
-    return ws.activityLog.slice(0, 20).map((activity, idx) => {
+    return mergedActivities.slice(0, 20).map((activity, idx) => {
       const actionLower = activity.action.toLowerCase();
       let action: "block" | "rate_limit" | "monitor" = "monitor";
       if (activity.enforced && actionLower.includes("block")) action = "block";
       else if (activity.enforced && actionLower.includes("rate")) action = "rate_limit";
 
-      const protocol = attackTypeToProtocol[activity.attack_type] ?? "-";
+      const protocol = ATTACK_TYPE_TO_PROTOCOL[activity.attack_type] ?? "-";
       return {
         id: `${activity.timestamp}-${idx}`,
         timestamp: new Date(activity.timestamp * 1000).toLocaleString(),
@@ -63,11 +77,11 @@ const MitigationControl = () => {
         status: "completed" as const,
       };
     });
-  }, [ws.activityLog]);
+  }, [mergedActivities]);
 
   const lastActionTime =
-    ws.activityLog.length > 0
-      ? new Date(ws.activityLog[0].timestamp * 1000).toLocaleTimeString()
+    mergedActivities.length > 0
+      ? new Date(mergedActivities[0].timestamp * 1000).toLocaleTimeString()
       : "-";
 
   const activeThreats =
@@ -159,6 +173,7 @@ const MitigationControl = () => {
 
         <AutoMitigationToggle
           isEnabled={autoMitigation}
+          disabled={!mitigationStatusKnown}
           onToggle={() =>
             ws.sendCommand(autoMitigation ? "disable_auto_mitigation" : "enable_auto_mitigation")
           }

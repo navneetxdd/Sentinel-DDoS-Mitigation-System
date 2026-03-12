@@ -1,8 +1,4 @@
-const EXPLAIN_API_URL = import.meta.env.VITE_EXPLAIN_API_URL || "http://localhost:5001";
-
-// Cooldown mechanism
-let lastAnalysisTime = 0;
-const COOLDOWN_MS = 15000; // Only analyze every 15 seconds max
+import { EXPLAIN_API_URL, isExplainApiConfigured } from "@/lib/apiConfig";
 
 export interface ThreatTelemetry {
   timestamp: string;
@@ -14,25 +10,48 @@ export interface ThreatTelemetry {
   topProtocol: string;
 }
 
+interface AnalyzeResponse {
+  analysis?: string;
+  error?: string;
+}
+
+const ANALYZE_TIMEOUT_MS = 12000;
+
 export const analyzeThreat = async (data: ThreatTelemetry): Promise<string> => {
-  const now = Date.now();
-  if (now - lastAnalysisTime < COOLDOWN_MS) {
-    return "Analysis skipped (cooldown active).";
+  if (!isExplainApiConfigured) {
+    return "Explain API is not configured. Set VITE_EXPLAIN_API_URL to enable Gemini XAI insights.";
   }
 
-  lastAnalysisTime = now;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ANALYZE_TIMEOUT_MS);
 
   try {
     const res = await fetch(`${EXPLAIN_API_URL}/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
+      signal: controller.signal,
     });
-    const json = await res.json();
-    return json.analysis || "AI Analysis returned an empty response.";
+
+    let json: AnalyzeResponse = {};
+    try {
+      json = (await res.json()) as AnalyzeResponse;
+    } catch {
+      json = {};
+    }
+
+    if (!res.ok) {
+      return json.error || `AI analysis request failed (HTTP ${res.status}).`;
+    }
+
+    return json.analysis?.trim() || "AI analysis returned an empty response.";
   } catch (error) {
-    console.error("Gemini AI Analysis failed:", error);
-    return "AI Analysis temporarily unavailable due to an API error.";
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return "AI analysis timed out. Retrying on next cycle.";
+    }
+    return "AI analysis is temporarily unavailable.";
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 

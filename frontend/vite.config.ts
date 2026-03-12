@@ -6,8 +6,34 @@ import { componentTagger } from "lovable-tagger";
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
-    host: "localhost",
+    // "::" binds to all IPv4 and IPv6 interfaces — remove CORS pain in dev
+    host: "::",
     port: 8080,
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // Recharts + D3 helpers are large; isolate them so dashboard pages
+          // don't block on charting code when first loading non-chart routes.
+          if (id.includes("recharts") || id.includes("d3-") || id.includes("victory-")) {
+            return "charts";
+          }
+          // Radix UI primitives are shared across many components but change rarely.
+          if (id.includes("@radix-ui")) {
+            return "radix";
+          }
+          // React runtime — kept tiny and always cached by the browser.
+          if (id.includes("node_modules/react/") || id.includes("node_modules/react-dom/")) {
+            return "react";
+          }
+          // Everything else in node_modules lands in a single stable vendor chunk.
+          if (id.includes("node_modules")) {
+            return "vendor";
+          }
+        },
+      },
+    },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

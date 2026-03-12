@@ -17,11 +17,17 @@ interface TrafficChartProps {
   data?: TrafficDataPoint[];
 }
 
+interface TrafficTooltipProps {
+  active?: boolean;
+  payload?: Array<{ value: number }>;
+  label?: string;
+}
+
 export function TrafficChart({ className, isAttack = false, data }: TrafficChartProps) {
   /* Use live data from WebSocket when available, otherwise show empty chart */
   const chartData = data && data.length > 0 ? data : [];
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  const CustomTooltip = ({ active, payload, label }: TrafficTooltipProps) => {
     if (active && payload && payload.length) {
       return (
         <div className="chart-tooltip">

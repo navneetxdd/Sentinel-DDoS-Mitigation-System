@@ -7,6 +7,7 @@ interface AutoMitigationToggleProps {
   autoBlocked?: number;
   rateLimited?: number;
   monitored?: number;
+  disabled?: boolean;
   className?: string;
 }
 
@@ -16,6 +17,7 @@ export function AutoMitigationToggle({
   autoBlocked = 0,
   rateLimited = 0,
   monitored = 0,
+  disabled = false,
   className,
 }: AutoMitigationToggleProps) {
   return (
@@ -44,11 +46,13 @@ export function AutoMitigationToggle({
 
         <button
           onClick={onToggle}
+          disabled={disabled}
           className={cn(
             "relative flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-all duration-300",
             isEnabled
               ? "bg-cyber-green/20 text-cyber-green border border-cyber-green/40 shadow-[0_0_20px_hsl(160_84%_45%/0.3)]"
-              : "bg-secondary text-foreground hover:bg-secondary/80 border border-border"
+              : "bg-secondary text-foreground hover:bg-secondary/80 border border-border",
+            disabled && "opacity-60 cursor-not-allowed hover:bg-secondary"
           )}
         >
           <Shield className="w-4 h-4" />

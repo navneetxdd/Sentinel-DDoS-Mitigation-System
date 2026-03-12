@@ -27,11 +27,14 @@ import argparse
 import json
 import math
 import os
+import sqlite3
 import sys
 import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Lock
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 try:
     import joblib
@@ -96,6 +99,8 @@ class ExplainHandler(BaseHTTPRequestHandler):
     _explainer: Optional[Any] = None
     _base_value: Optional[float] = None
     _cors_origin: str = "http://localhost:5173"
+    _db_path: str = ""
+    _db_lock: Lock = Lock()
 
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write(f"[explain_api] {args[0]}\n")
@@ -108,6 +113,10 @@ class ExplainHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", ExplainHandler._cors_origin)
         self.end_headers()
         self.wfile.write(body)
+
+    # Maximum accepted request body size (1 MiB). Prevents a trivial DoS via
+    # a single HTTP request with an enormous Content-Length.
+    _MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
 
     def _parse_body(self) -> Optional[Dict[str, Any]]:
         content_length = int(self.headers.get("Content-Length", 0))
@@ -132,13 +141,26 @@ class ExplainHandler(BaseHTTPRequestHandler):
             loaded = ExplainHandler.model is not None and ExplainHandler._explainer is not None
             self._json_response(200, {"status": "ok", "model_loaded": loaded, "shap_available": shap is not None})
             return
+        if parsed.path == "/events":
+            self._handle_events_get(parsed)
+            return
         self._json_response(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
+        # Reject oversized bodies before routing — prevents memory DoS.
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length > self._MAX_BODY_BYTES:
+            self._json_response(413, {"error": "Request body too large (max 1 MiB)"})
+            return
+
         parsed = urlparse(self.path)
 
         if parsed.path == "/analyze":
             self._handle_analyze()
+            return
+
+        if parsed.path == "/events":
+            self._handle_events_post()
             return
 
         if parsed.path != "/shap":
@@ -165,6 +187,15 @@ class ExplainHandler(BaseHTTPRequestHandler):
         samples = body.get("samples")
         if not isinstance(samples, list) or len(samples) == 0:
             self._json_response(400, {"error": "Expected non-empty 'samples' array of 20-feature vectors"})
+            return
+
+        # Cap to 512 samples per request — prevents CPU/memory DoS via SHAP.
+        MAX_SAMPLES = 512
+        if len(samples) > MAX_SAMPLES:
+            self._json_response(
+                400,
+                {"error": f"Too many samples (max {MAX_SAMPLES} per request)"},
+            )
             return
 
         X = np.asarray(samples, dtype=np.float64)
@@ -205,6 +236,121 @@ class ExplainHandler(BaseHTTPRequestHandler):
             },
         )
 
+    # ------------------------------------------------------------------
+    # SQLite-backed event log
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _init_db(cls, db_path: str) -> None:
+        """Initialise the SQLite event log and cache the path on the class."""
+        cls._db_path = db_path
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sentinel_events (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_ts  REAL    NOT NULL,
+                    logged_at TEXT    NOT NULL,
+                    payload   TEXT    NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_event_ts ON sentinel_events (event_ts DESC)"
+            )
+            conn.commit()
+        print(f"[*] Event log database: {db_path}")
+
+    def _handle_events_get(self, parsed: Any) -> None:
+        """Return recent persisted activity events (newest-first)."""
+        if not ExplainHandler._db_path:
+            self._json_response(503, {"error": "Event database not initialised"})
+            return
+        qs = parse_qs(parsed.query)
+        try:
+            limit = min(int(qs.get("limit", ["200"])[0]), 1000)
+        except (ValueError, IndexError):
+            limit = 200
+        with ExplainHandler._db_lock:
+            try:
+                with sqlite3.connect(ExplainHandler._db_path) as conn:
+                    rows = conn.execute(
+                        "SELECT payload FROM sentinel_events ORDER BY event_ts DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+            except sqlite3.Error as e:
+                self._json_response(500, {"error": f"Database error: {e}"})
+                return
+        events: List[Any] = []
+        for (payload_str,) in rows:
+            try:
+                events.append(json.loads(payload_str))
+            except json.JSONDecodeError:
+                pass
+        self._json_response(200, {"events": events, "count": len(events)})
+
+    def _handle_events_post(self) -> None:
+        """Persist a SentinelActivity event sent by the frontend."""
+        if not ExplainHandler._db_path:
+            self._json_response(503, {"error": "Event database not initialised"})
+            return
+        body = self._parse_body()
+        if body is None:
+            self._json_response(400, {"error": "Invalid JSON body"})
+            return
+        event_ts = body.get("timestamp")
+        if not isinstance(event_ts, (int, float)):
+            self._json_response(
+                400,
+                {"error": "Missing or invalid 'timestamp' field (must be Unix epoch number)"},
+            )
+            return
+        logged_at = datetime.now(timezone.utc).isoformat()
+        payload_str = json.dumps(body)
+        with ExplainHandler._db_lock:
+            try:
+                with sqlite3.connect(ExplainHandler._db_path) as conn:
+                    conn.execute(
+                        "INSERT INTO sentinel_events (event_ts, logged_at, payload) VALUES (?, ?, ?)",
+                        (float(event_ts), logged_at, payload_str),
+                    )
+                    # Keep at most 10 000 events; prune oldest on every write.
+                    conn.execute(
+                        """
+                        DELETE FROM sentinel_events WHERE id NOT IN (
+                            SELECT id FROM sentinel_events ORDER BY event_ts DESC LIMIT 10000
+                        )
+                        """
+                    )
+                    conn.commit()
+            except sqlite3.Error as e:
+                self._json_response(500, {"error": f"Database error: {e}"})
+                return
+        self._json_response(201, {"status": "ok"})
+
+    @staticmethod
+    def _sanitize_str(value: Any, max_len: int = 80) -> str:
+        """Return a safe, printable version of a telemetry string field.
+
+        Strips newlines and control characters so a crafted sourceIp or
+        topProtocol value cannot inject extra prompt lines or escape the
+        structured telemetry block.
+        """
+        text = str(value) if value is not None else "N/A"
+        # Strip control characters (including newlines/tabs)
+        text = "".join(ch for ch in text if ch.isprintable())
+        # Truncate to a safe length so no field can bloat the prompt
+        return text[:max_len]
+
+    @staticmethod
+    def _sanitize_number(value: Any, default: float = 0.0) -> float:
+        """Coerce a telemetry numeric field to float, rejecting non-finite values."""
+        try:
+            v = float(value)
+            return v if math.isfinite(v) else default
+        except (TypeError, ValueError):
+            return default
+
     def _handle_analyze(self) -> None:
         """Proxy Gemini API call server-side to avoid exposing API key to the frontend."""
         body = self._parse_body()
@@ -220,19 +366,29 @@ class ExplainHandler(BaseHTTPRequestHandler):
             )
             return
 
+        # Sanitize all user-supplied fields before embedding them in the prompt
+        # to prevent prompt injection via crafted telemetry values.
+        ts         = self._sanitize_str(body.get("timestamp"), max_len=40)
+        src_ip     = self._sanitize_str(body.get("sourceIp"), max_len=45)   # max IPv6 len
+        pps        = self._sanitize_number(body.get("packetsPerSecond"))
+        bps        = self._sanitize_number(body.get("bytesPerSecond"))
+        score      = self._sanitize_number(body.get("threatScore"))
+        flows      = self._sanitize_number(body.get("activeFlows"))
+        protocol   = self._sanitize_str(body.get("topProtocol"), max_len=20)
+
         prompt = (
             "You are an expert Security Operations Center (SOC) AI Analyst. "
             "A DDoS mitigation system (Sentinel) has just detected an anomaly. "
             "Review the following real-time telemetry and write a concise, 2-3 sentence explanation "
             "of what is likely happening and why the system flagged it. Be direct and analytical.\n\n"
-            f"Telemetry Data:\n"
-            f"- Timestamp: {body.get('timestamp', 'N/A')}\n"
-            f"- Attacker IP: {body.get('sourceIp', 'N/A')}\n"
-            f"- Peak Packets/Sec: {body.get('packetsPerSecond', 0)}\n"
-            f"- Peak Bytes/Sec: {body.get('bytesPerSecond', 0)}\n"
-            f"- Threat Score: {body.get('threatScore', 0)}\n"
-            f"- Active Concurrent Flows: {body.get('activeFlows', 0)}\n"
-            f"- Dominant Protocol: {body.get('topProtocol', 'Unknown')}\n\n"
+            "Telemetry Data:\n"
+            f"- Timestamp: {ts}\n"
+            f"- Attacker IP: {src_ip}\n"
+            f"- Peak Packets/Sec: {pps:.0f}\n"
+            f"- Peak Bytes/Sec: {bps:.0f}\n"
+            f"- Threat Score: {score:.4f}\n"
+            f"- Active Concurrent Flows: {flows:.0f}\n"
+            f"- Dominant Protocol: {protocol}\n\n"
             "Provide only the analysis and conclusion without extra pleasantries."
         )
 
@@ -303,10 +459,13 @@ def main() -> None:
         except Exception as e:
             print(f"[!] Failed to initialize SHAP explainer: {e}", file=sys.stderr)
 
+    db_path = os.path.join(script_dir, "sentinel_events.db")
+    ExplainHandler._init_db(db_path)
+
     server = ThreadingHTTPServer((args.host, args.port), ExplainHandler)
     print(f"[*] Explain API listening on http://{args.host}:{args.port}")
     print(f"[*] CORS origin: {args.cors_origin}")
-    print("[*] GET /health  POST /shap  POST /analyze")
+    print("[*] GET /health  GET /events  POST /shap  POST /analyze  POST /events")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

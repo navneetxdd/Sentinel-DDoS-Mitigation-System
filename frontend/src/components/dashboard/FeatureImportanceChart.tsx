@@ -23,6 +23,18 @@ interface FeatureImportanceChartProps {
   onRequestShap?: () => void;
 }
 
+interface FeatureChartDatum {
+  name: string;
+  importance: number;
+  color: string;
+  rawValue?: number;
+}
+
+interface FeatureTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: FeatureChartDatum }>;
+}
+
 /* Heuristic weights: 7 backend weights */
 const FEATURE_META: { key: keyof SentinelFeatureImportance; name: string; color: string }[] = [
   { key: "volume_weight", name: "Volume", color: "hsl(0, 72%, 51%)" },
@@ -81,8 +93,8 @@ export function FeatureImportanceChart({
           .sort((a, b) => b.importance - a.importance)
       : [];
 
-  const features = showShap && hasShap ? shapFeatures : heuristicFeatures;
-  const CustomTooltip = ({ active, payload }: any) => {
+  const features: FeatureChartDatum[] = showShap && hasShap ? shapFeatures : heuristicFeatures;
+  const CustomTooltip = ({ active, payload }: FeatureTooltipProps) => {
     if (active && payload && payload.length) {
       const p = payload[0].payload;
       const label = showShap && hasShap ? `Contribution: ${(p.rawValue ?? p.importance).toFixed(4)}` : `Weight: ${(p.importance * 100).toFixed(0)}%`;

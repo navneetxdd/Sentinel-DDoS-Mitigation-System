@@ -17,6 +17,18 @@ interface ProtocolChartProps {
   data?: SentinelProtocolDist | null;
 }
 
+interface ProtocolChartDatum {
+  protocol: string;
+  count: number;
+  color: string;
+}
+
+interface ProtocolTooltipProps {
+  active?: boolean;
+  payload?: Array<{ payload: ProtocolChartDatum; value: number }>;
+  label?: string;
+}
+
 /* Same color mapping as original */
 const COLORS = {
   TCP: "hsl(190, 100%, 50%)",
@@ -27,16 +39,16 @@ const COLORS = {
 
 export function ProtocolChart({ className, isAttack = false, data }: ProtocolChartProps) {
   /* Build chart data from real backend protocol_distribution stream */
-  const chartData = data
+  const chartData: ProtocolChartDatum[] = data
     ? [
-      { protocol: "TCP", count: data.tcp_bytes, color: COLORS.TCP },
-      { protocol: "UDP", count: data.udp_bytes, color: COLORS.UDP },
-      { protocol: "ICMP", count: data.icmp_bytes, color: isAttack ? "hsl(0, 72%, 51%)" : COLORS.ICMP },
-      { protocol: "Other", count: data.other_bytes, color: COLORS.Other },
-    ]
+        { protocol: "TCP", count: data.tcp_bytes, color: COLORS.TCP },
+        { protocol: "UDP", count: data.udp_bytes, color: COLORS.UDP },
+        { protocol: "ICMP", count: data.icmp_bytes, color: isAttack ? "hsl(0, 72%, 51%)" : COLORS.ICMP },
+        { protocol: "Other", count: data.other_bytes, color: COLORS.Other },
+      ]
     : [];
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  const CustomTooltip = ({ active, payload, label }: ProtocolTooltipProps) => {
     if (active && payload && payload.length) {
       return (
         <div className="chart-tooltip">

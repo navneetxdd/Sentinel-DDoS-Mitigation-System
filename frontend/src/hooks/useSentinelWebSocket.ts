@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { EXPLAIN_API_URL, isExplainApiConfigured } from "@/lib/apiConfig";
 
 /* ============================================================================
  * Type definitions matching the C backend's 12 JSON streams
@@ -126,8 +127,6 @@ export interface ShapContribution {
   value: number;
 }
 
-export const EXPLAIN_API_URL = import.meta.env.VITE_EXPLAIN_API_URL || "http://localhost:5001";
-
 /* ============================================================================
  * Complete state exposed by the hook
  * ============================================================================ */
@@ -151,6 +150,8 @@ export interface SentinelState {
   connections: SentinelConnection[];
   mitigationStatus: SentinelMitigationStatus | null;
   trafficHistory: TrafficDataPoint[];
+  /** Activity events loaded from the persistent event log on mount. */
+  persistedEvents: SentinelActivity[];
   sendCommand: (command: string, params?: Record<string, string>) => void;
   requestShapContributions: () => Promise<void>;
 }
@@ -179,6 +180,7 @@ export function useSentinelWebSocket(): SentinelState {
   const [connections, setConnections] = useState<SentinelConnection[]>([]);
   const [mitigationStatus, setMitigationStatus] = useState<SentinelMitigationStatus | null>(null);
   const [trafficHistory, setTrafficHistory] = useState<TrafficDataPoint[]>([]);
+  const [persistedEvents, setPersistedEvents] = useState<SentinelActivity[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -197,6 +199,14 @@ export function useSentinelWebSocket(): SentinelState {
         case "activity_logs":
           setActivityLog((prev) => {
             const entry = msg.data as SentinelActivity;
+            // Persist to the local SQLite event log — fire-and-forget, non-blocking.
+            if (isExplainApiConfigured) {
+              fetch(`${EXPLAIN_API_URL}/events`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(entry),
+              }).catch(() => {/* best-effort */});
+            }
             const next = [entry, ...prev];
             return next.length > MAX_ACTIVITY_LOG ? next.slice(0, MAX_ACTIVITY_LOG) : next;
           });
@@ -317,7 +327,25 @@ export function useSentinelWebSocket(): SentinelState {
     };
   }, [connect]);
 
-  const sendCommand = useCallback((command: string, params?: Record<string, string>) => {
+  // Restore activity history from the persistent SQLite event log on mount.
+  // This means the timeline survives page reloads even when the C backend
+  // isn't currently streaming new events.
+  useEffect(() => {
+    if (!isExplainApiConfigured) return;
+    fetch(`${EXPLAIN_API_URL}/events?limit=200`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<{ events: SentinelActivity[]; count: number }>;
+      })
+      .then(({ events }) => {
+        if (Array.isArray(events) && events.length > 0) {
+          setPersistedEvents(events);
+        }
+      })
+        .catch(() => {/* non-fatal: API may not be running */});
+      }, []); // run once on mount
+
+      const sendCommand = useCallback((command: string, params?: Record<string, string>) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ command, ...params }));
@@ -330,6 +358,12 @@ export function useSentinelWebSocket(): SentinelState {
       setShapError("No feature vector available. Wait for traffic and try again.");
       return;
     }
+    if (!isExplainApiConfigured) {
+      setShapError("Explain API is not configured. Set VITE_EXPLAIN_API_URL.");
+      setShapContributions(null);
+      return;
+    }
+
     setShapLoading(true);
     setShapError(null);
     try {
@@ -358,6 +392,7 @@ export function useSentinelWebSocket(): SentinelState {
     connected,
     metrics,
     activityLog,
+    persistedEvents,
     blockedIPs,
     rateLimitedIPs,
     monitoredIPs,
