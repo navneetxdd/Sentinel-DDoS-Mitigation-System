@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { EXPLAIN_API_URL, isExplainApiConfigured } from "@/lib/apiConfig";
+import { fetchExplainApi, isExplainApiConfigured, WS_URL_CANDIDATES } from "@/lib/apiConfig";
 
 /* ============================================================================
  * Type definitions matching the C backend's 12 JSON streams
@@ -159,8 +159,6 @@ export interface SentinelState {
 const MAX_ACTIVITY_LOG = 100;
 const MAX_TRAFFIC_HISTORY = 60;
 
-const WS_URL = import.meta.env.VITE_WS_URL || `ws://${window.location.hostname}:8765`;
-
 export function useSentinelWebSocket(): SentinelState {
   const [connected, setConnected] = useState(false);
   const [metrics, setMetrics] = useState<SentinelMetrics | null>(null);
@@ -185,6 +183,7 @@ export function useSentinelWebSocket(): SentinelState {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelayRef = useRef<number>(1000);
+  const wsCandidateIndexRef = useRef<number>(0);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
@@ -201,7 +200,7 @@ export function useSentinelWebSocket(): SentinelState {
             const entry = msg.data as SentinelActivity;
             // Persist to the local SQLite event log — fire-and-forget, non-blocking.
             if (isExplainApiConfigured) {
-              fetch(`${EXPLAIN_API_URL}/events`, {
+              fetchExplainApi("/events", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(entry),
@@ -279,13 +278,16 @@ export function useSentinelWebSocket(): SentinelState {
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (WS_URL_CANDIDATES.length === 0) return;
 
     try {
-      const ws = new WebSocket(WS_URL);
+      const wsUrl = WS_URL_CANDIDATES[wsCandidateIndexRef.current % WS_URL_CANDIDATES.length];
+      const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         setConnected(true);
         reconnectDelayRef.current = 1000;
+        wsCandidateIndexRef.current = 0;
         if (reconnectTimerRef.current) {
           clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = null;
@@ -295,6 +297,7 @@ export function useSentinelWebSocket(): SentinelState {
       ws.onclose = () => {
         setConnected(false);
         wsRef.current = null;
+        wsCandidateIndexRef.current = (wsCandidateIndexRef.current + 1) % WS_URL_CANDIDATES.length;
         const delay = reconnectDelayRef.current;
         reconnectTimerRef.current = setTimeout(connect, delay);
         reconnectDelayRef.current = Math.min(delay * 2, 30000);
@@ -332,7 +335,7 @@ export function useSentinelWebSocket(): SentinelState {
   // isn't currently streaming new events.
   useEffect(() => {
     if (!isExplainApiConfigured) return;
-    fetch(`${EXPLAIN_API_URL}/events?limit=200`)
+    fetchExplainApi("/events?limit=200")
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<{ events: SentinelActivity[]; count: number }>;
@@ -359,7 +362,7 @@ export function useSentinelWebSocket(): SentinelState {
       return;
     }
     if (!isExplainApiConfigured) {
-      setShapError("Explain API is not configured. Set VITE_EXPLAIN_API_URL.");
+      setShapError("Explain API endpoint discovery failed.");
       setShapContributions(null);
       return;
     }
@@ -367,7 +370,7 @@ export function useSentinelWebSocket(): SentinelState {
     setShapLoading(true);
     setShapError(null);
     try {
-      const res = await fetch(`${EXPLAIN_API_URL}/shap`, {
+      const res = await fetchExplainApi("/shap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ samples: [fv] }),

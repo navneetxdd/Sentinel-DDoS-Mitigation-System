@@ -1,4 +1,4 @@
-import { EXPLAIN_API_URL, isExplainApiConfigured } from "@/lib/apiConfig";
+import { fetchExplainApi, isExplainApiConfigured } from "@/lib/apiConfig";
 
 export interface ThreatTelemetry {
   timestamp: string;
@@ -19,14 +19,14 @@ const ANALYZE_TIMEOUT_MS = 12000;
 
 export const analyzeThreat = async (data: ThreatTelemetry): Promise<string> => {
   if (!isExplainApiConfigured) {
-    return "Explain API is not configured. Set VITE_EXPLAIN_API_URL to enable Gemini XAI insights.";
+    return "Explain API endpoint discovery failed. Start the local backend and retry.";
   }
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), ANALYZE_TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${EXPLAIN_API_URL}/analyze`, {
+    const res = await fetchExplainApi("/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -49,7 +49,7 @@ export const analyzeThreat = async (data: ThreatTelemetry): Promise<string> => {
     if (error instanceof DOMException && error.name === "AbortError") {
       return "AI analysis timed out. Retrying on next cycle.";
     }
-    return "AI analysis is temporarily unavailable.";
+    return "AI analysis backend is temporarily unavailable.";
   } finally {
     clearTimeout(timeoutId);
   }
