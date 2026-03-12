@@ -178,6 +178,7 @@ void de_set_global_rate_limit(de_context_t *ctx, double score_rate_limit, double
 
 /* Dynamic threshold setters (Settings sync from UI). Values as received from frontend. */
 void de_set_syn_threshold(de_context_t *ctx, double value);      /* UI pps -> syn_ratio 0-1 */
+void de_set_conn_threshold(de_context_t *ctx, double value);     /* UI flows -> flow_count_thresh */
 void de_set_flow_count_threshold(de_context_t *ctx, double value);
 void de_set_pps_threshold(de_context_t *ctx, double value);      /* udp + icmp pps */
 void de_set_entropy_threshold(de_context_t *ctx, double value);  /* UI 0-100 -> 0-1 */

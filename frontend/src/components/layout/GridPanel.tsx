@@ -84,6 +84,8 @@ export function StatCard({
         "cyber-card glow-border p-6 rounded-lg flex flex-col gap-4",
         className
       )}
+      role="status"
+      aria-label={`${label}: ${value} ${unit || ''}`}
     >
       <div className="flex items-start justify-between">
         <div className="space-y-1">
@@ -98,7 +100,10 @@ export function StatCard({
           </div>
         </div>
         {icon && (
-          <div className={cn("p-2 rounded-lg", variantMap[variant])}>
+          <div 
+            className={cn("p-2 rounded-lg", variantMap[variant])}
+            aria-label={`${label} status indicator`}
+          >
             {icon}
           </div>
         )}
@@ -150,6 +155,8 @@ export function Panel({
         "rounded-lg overflow-hidden",
         className
       )}
+      role="region"
+      aria-label={title}
     >
       {(title || description) && (
         <div className="px-6 py-4 border-b border-border/50">

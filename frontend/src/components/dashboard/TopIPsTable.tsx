@@ -41,21 +41,33 @@ export function TopIPsTable({
     switch (status) {
       case "blocked":
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-danger/10 text-status-danger border border-status-danger/20">
+          <span 
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-danger/10 text-status-danger border border-status-danger/20"
+            role="status"
+            aria-label="IP is blocked"
+          >
             <Shield className="w-3 h-3" />
             Blocked
           </span>
         );
       case "rate-limited":
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-warning/10 text-status-warning border border-status-warning/20">
+          <span 
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-warning/10 text-status-warning border border-status-warning/20"
+            role="status"
+            aria-label="IP is rate limited"
+          >
             <AlertTriangle className="w-3 h-3" />
             Rate Limited
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-success/10 text-status-success border border-status-success/20">
+          <span 
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-success/10 text-status-success border border-status-success/20"
+            role="status"
+            aria-label="IP is normal"
+          >
             <CheckCircle className="w-3 h-3" />
             Normal
           </span>
@@ -71,13 +83,13 @@ export function TopIPsTable({
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full">
+        <table className="w-full" role="table" aria-label="Top source IPs">
           <thead>
             <tr className="border-b border-border">
-              <th className="text-left text-xs font-medium text-muted-foreground py-2">Source IP</th>
-              <th className="text-left text-xs font-medium text-muted-foreground py-2">Packets</th>
-              <th className="text-left text-xs font-medium text-muted-foreground py-2">Threat %</th>
-              <th className="text-left text-xs font-medium text-muted-foreground py-2">Status</th>
+              <th className="text-left text-xs font-medium text-muted-foreground py-2" scope="col">Source IP</th>
+              <th className="text-left text-xs font-medium text-muted-foreground py-2" scope="col">Packets</th>
+              <th className="text-left text-xs font-medium text-muted-foreground py-2" scope="col">Threat %</th>
+              <th className="text-left text-xs font-medium text-muted-foreground py-2" scope="col">Status</th>
             </tr>
           </thead>
           <tbody>

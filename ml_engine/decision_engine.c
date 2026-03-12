@@ -310,10 +310,16 @@ void de_set_syn_threshold(de_context_t *ctx, double value)
     ctx->cfg.syn_ratio_thresh = v;
 }
 
+void de_set_conn_threshold(de_context_t *ctx, double value)
+{
+    if (!ctx) return;
+    ctx->cfg.flow_count_thresh = (value > 0) ? value : 5000.0;
+}
+
 void de_set_flow_count_threshold(de_context_t *ctx, double value)
 {
     if (!ctx) return;
-    ctx->cfg.flow_count_thresh = (value > 0) ? value : 500.0;
+    ctx->cfg.flow_count_thresh = (value > 0) ? value : 5000.0;
 }
 
 void de_set_pps_threshold(de_context_t *ctx, double value)

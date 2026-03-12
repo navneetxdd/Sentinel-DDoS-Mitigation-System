@@ -22,14 +22,14 @@ export function ActiveConnectionsTable({ className, connections = [] }: ActiveCo
       </div>
       <div className="overflow-x-auto max-h-48 overflow-y-auto">
         {connections.length > 0 ? (
-          <table className="w-full text-sm">
+          <table className="w-full text-sm" role="table" aria-label="Active connections">
             <thead>
               <tr className="border-b border-border">
-                <th className="text-left text-xs font-medium text-muted-foreground py-2">Source</th>
-                <th className="text-left text-xs font-medium text-muted-foreground py-2">Destination</th>
-                <th className="text-left text-xs font-medium text-muted-foreground py-2">Proto</th>
-                <th className="text-right text-xs font-medium text-muted-foreground py-2">Packets</th>
-                <th className="text-right text-xs font-medium text-muted-foreground py-2">Bytes</th>
+                <th className="text-left text-xs font-medium text-muted-foreground py-2" scope="col">Source</th>
+                <th className="text-left text-xs font-medium text-muted-foreground py-2" scope="col">Destination</th>
+                <th className="text-left text-xs font-medium text-muted-foreground py-2" scope="col">Proto</th>
+                <th className="text-right text-xs font-medium text-muted-foreground py-2" scope="col">Packets</th>
+                <th className="text-right text-xs font-medium text-muted-foreground py-2" scope="col">Bytes</th>
               </tr>
             </thead>
             <tbody>

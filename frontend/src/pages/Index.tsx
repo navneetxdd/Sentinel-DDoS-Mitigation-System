@@ -8,6 +8,7 @@ import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
 import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
+import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
 import {
   Activity,
   Layers,
@@ -22,6 +23,7 @@ import {
 
 const Index = () => {
   const ws = useSentinelWebSocket();
+  const benchmarks = useModelBenchmarkReport();
 
   /* Real data from backend streams - NEVER mock */
   const pps = ws.metrics?.packets_per_sec ?? 0;
@@ -76,7 +78,11 @@ const Index = () => {
           title="Sentinel"
           description="Behavior-Aware DDoS Detection & Adaptive Mitigation"
           icon={<Hexagon className="w-6 h-6 text-foreground" />}
-          action={<StatusBadge status={getStatus()} />}
+          action={
+            <div role="status" aria-label={`System status: ${getStatus()}`}>
+              <StatusBadge status={getStatus()} />
+            </div>
+          }
         />
 
         {/* Primary KPI Grid - 4 Columns */}
@@ -179,22 +185,11 @@ const Index = () => {
               variant={ws.mitigationStatus?.kernel_dropping_enabled ? "success" : "warning"}
             />
             <StatCard
-              label="SDN Controller"
-              value={
-                ws.mitigationStatus?.sdn_connected === 1
-                  ? "Connected"
-                  : ws.mitigationStatus?.sdn_connected === 0
-                  ? "Unreachable"
-                  : "Unknown"
-              }
+              label="ML Model"
+              value={benchmarks.report?.runtime_model ?? "Random Forest"}
+              unit={benchmarks.report ? `${(benchmarks.report.accuracy * 100).toFixed(1)}%` : ""}
               icon={<Server className="w-5 h-5" />}
-              variant={
-                ws.mitigationStatus?.sdn_connected === 1
-                  ? "success"
-                  : ws.mitigationStatus?.sdn_connected === 0
-                  ? "danger"
-                  : "default"
-              }
+              variant="success"
             />
           </GridLayout>
         </div>

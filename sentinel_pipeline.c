@@ -1033,7 +1033,7 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg, void *udat
     }
     else if (strcmp(cmd, "set_conn_threshold") == 0 && arg) {
         double v = strtod(arg, NULL);
-        de_set_flow_count_threshold(c->de, v);
+        de_set_conn_threshold(c->de, v);
         LOG_INFO("[WS-CMD] set_conn_threshold %s", arg);
     }
     else if (strcmp(cmd, "set_pps_threshold") == 0 && arg) {

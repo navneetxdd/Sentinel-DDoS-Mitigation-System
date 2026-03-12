@@ -5,10 +5,12 @@ import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
 import { StatusBadge, StatusType } from "@/components/dashboard/StatusBadge";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
+import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
 import { Activity } from "lucide-react";
 
 const TrafficAnalysis = () => {
   const ws = useSentinelWebSocket();
+  const benchmarks = useModelBenchmarkReport();
 
   /* Derive attack state from feature_importance */
   const threatScore = ws.featureImportance?.avg_threat_score ?? 0;
@@ -73,7 +75,7 @@ const TrafficAnalysis = () => {
         </div>
 
         {/* Live Stats Footer — same layout as original, real data from backend */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div className="cyber-card p-4 rounded-lg text-center">
             <p className="text-3xl font-bold font-mono text-foreground">
               {formatPps(pps)}
@@ -97,6 +99,12 @@ const TrafficAnalysis = () => {
               {formatBandwidth(bps)}
             </p>
             <p className="text-xs text-muted-foreground mt-1">Bandwidth</p>
+          </div>
+          <div className="cyber-card p-4 rounded-lg text-center">
+            <p className="text-3xl font-bold font-mono text-status-success">
+              {benchmarks.report ? `${(benchmarks.report.accuracy * 100).toFixed(1)}%` : "---"}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">Model Accuracy</p>
           </div>
         </div>
       </div>
