@@ -4,6 +4,9 @@ build/
 *.order
 .vscode/
 .venv-controller/
+.venv/
+*.joblib
+node_modules/
 *.o
 *.a
 *.so

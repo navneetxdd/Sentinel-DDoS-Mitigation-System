@@ -1,73 +1,47 @@
-# Welcome to your Lovable project
+# Sentinel Dashboard — Frontend
 
-## Project info
+Real-time DDoS detection and mitigation dashboard for the Sentinel pipeline.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Tech Stack
 
-## How can I edit this code?
+- **React 18** + **TypeScript** — UI framework
+- **Vite** — Build tooling
+- **Tailwind CSS** + **shadcn/ui** — Styling and component library
+- **Recharts** — Traffic and protocol charts
+- **WebSocket** — Real-time data from the C backend pipeline
 
-There are several ways of editing your application.
+## Architecture
 
-**Use Lovable**
+The frontend connects to two backend services:
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+1. **C Pipeline WebSocket** (`ws://localhost:8765`) — Streams 12 real-time data channels (metrics, traffic rates, protocol distribution, top sources, feature importance, SHAP vectors, mitigation status, activity logs, blocked/rate-limited/monitored/whitelisted IPs, active connections).
+2. **Explain API** (`http://localhost:5001`) — Python service providing SHAP explainability and Gemini-powered threat analysis.
 
-Changes made via Lovable will be committed automatically to this repo.
+## Environment Variables
 
-**Use your preferred IDE**
+Copy `.env.example` to `.env` and configure:
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+| Variable | Default | Description |
+|---|---|---|
+| `VITE_WS_URL` | `ws://localhost:8765` | WebSocket URL for the C pipeline |
+| `VITE_EXPLAIN_API_URL` | `http://localhost:5001` | SHAP Explain API + Gemini proxy |
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+## Getting Started
 
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+The dashboard will be available at `http://localhost:5173`.
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Pages
 
-**Use GitHub Codespaces**
+| Route | Description |
+|---|---|
+| `/` | Main dashboard — KPIs, traffic chart, risk gauge, AI analyst, threat intelligence |
+| `/traffic` | Live traffic analysis — protocol distribution, top IPs, active connections |
+| `/decision` | Decision engine — ML classification, SHAP explainability, model benchmarks |
+| `/mitigation` | Mitigation control — block/rate-limit management, timeline, quick actions |
+| `/settings` | Detection thresholds, mitigation rules, IP lists, notifications |
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
-
-## Can I connect a custom domain to my Lovable project?
-
-Yes, you can!
-
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)

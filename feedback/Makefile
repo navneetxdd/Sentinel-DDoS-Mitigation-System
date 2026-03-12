@@ -3,7 +3,7 @@
 
 CC       ?= gcc
 AR       ?= ar
-CFLAGS   := -Wall -Wextra -O2 -std=c11 -I.. -I../sentinel_core -MMD -MP
+CFLAGS   := -Wall -Wextra -Werror -O2 -std=c11 -I.. -I../sentinel_core -MMD -MP -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 LDLIBS   := -lm
 
 SRCS     := feedback.c

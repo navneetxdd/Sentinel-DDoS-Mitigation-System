@@ -9,6 +9,12 @@
 #ifndef SENTINEL_PIPELINE_STUBS_H
 #define SENTINEL_PIPELINE_STUBS_H
 
+#ifdef __linux__
+#if !defined(SENTINEL_ALLOW_STUBS)
+#error "sentinel_pipeline_stubs.h must NOT be included on Linux production builds. Define SENTINEL_ALLOW_STUBS to override."
+#endif
+#endif
+
 # include <stdint.h>
 # include <netinet/in.h>
 # include <netinet/ip.h>
@@ -27,14 +33,14 @@ union bpf_attr {
     uint32_t start_id, next_id, map_id, bpf_fd, info_len;
 };
 
-# define BPF_MAP_UPDATE_ELEM    0
-# define BPF_MAP_DELETE_ELEM   0
-# define BPF_MAP_GET_NEXT_KEY  0
-# define BPF_MAP_GET_NEXT_ID    0
-# define BPF_MAP_GET_FD_BY_ID   0
-# define BPF_OBJ_GET_INFO_BY_FD 0
-# define BPF_OBJ_GET            0
-# define __NR_bpf               0
+# define BPF_MAP_UPDATE_ELEM    0xDEAD0001
+# define BPF_MAP_DELETE_ELEM    0xDEAD0002
+# define BPF_MAP_GET_NEXT_KEY   0xDEAD0003
+# define BPF_MAP_GET_NEXT_ID    0xDEAD0004
+# define BPF_MAP_GET_FD_BY_ID   0xDEAD0005
+# define BPF_OBJ_GET_INFO_BY_FD 0xDEAD0006
+# define BPF_OBJ_GET            0xDEAD0007
+# define __NR_bpf               (-1)
 
 struct xdp_desc { __u64 addr; __u32 len; };
 struct xdp_umem { char *frames; };

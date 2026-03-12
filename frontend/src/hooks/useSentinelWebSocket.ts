@@ -126,7 +126,7 @@ export interface ShapContribution {
   value: number;
 }
 
-export const EXPLAIN_API_URL = "http://localhost:5001";
+export const EXPLAIN_API_URL = import.meta.env.VITE_EXPLAIN_API_URL || "http://localhost:5001";
 
 /* ============================================================================
  * Complete state exposed by the hook
@@ -158,7 +158,7 @@ export interface SentinelState {
 const MAX_ACTIVITY_LOG = 100;
 const MAX_TRAFFIC_HISTORY = 60;
 
-const WS_URL = `ws://${window.location.hostname}:8765`;
+const WS_URL = import.meta.env.VITE_WS_URL || `ws://${window.location.hostname}:8765`;
 
 export function useSentinelWebSocket(): SentinelState {
   const [connected, setConnected] = useState(false);
@@ -182,6 +182,7 @@ export function useSentinelWebSocket(): SentinelState {
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelayRef = useRef<number>(1000);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
@@ -274,6 +275,7 @@ export function useSentinelWebSocket(): SentinelState {
 
       ws.onopen = () => {
         setConnected(true);
+        reconnectDelayRef.current = 1000;
         if (reconnectTimerRef.current) {
           clearTimeout(reconnectTimerRef.current);
           reconnectTimerRef.current = null;
@@ -283,7 +285,9 @@ export function useSentinelWebSocket(): SentinelState {
       ws.onclose = () => {
         setConnected(false);
         wsRef.current = null;
-        reconnectTimerRef.current = setTimeout(connect, 2000);
+        const delay = reconnectDelayRef.current;
+        reconnectTimerRef.current = setTimeout(connect, delay);
+        reconnectDelayRef.current = Math.min(delay * 2, 30000);
       };
 
       ws.onerror = () => {
@@ -293,7 +297,9 @@ export function useSentinelWebSocket(): SentinelState {
       ws.onmessage = handleMessage;
       wsRef.current = ws;
     } catch {
-      reconnectTimerRef.current = setTimeout(connect, 2000);
+      const delay = reconnectDelayRef.current;
+      reconnectTimerRef.current = setTimeout(connect, delay);
+      reconnectDelayRef.current = Math.min(delay * 2, 30000);
     }
   }, [handleMessage]);
 

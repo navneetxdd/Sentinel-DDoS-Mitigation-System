@@ -1,6 +1,6 @@
 # Feature Extractor (with -MMD for .h dependency tracking)
 CC      = gcc
-CFLAGS  = -Wall -Wextra -O2 -I.. -MMD -MP
+CFLAGS  = -Wall -Wextra -Werror -O2 -std=c11 -I.. -I../sentinel_core -MMD -MP -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 AR      = ar
 TARGET  = libfeatureextractor.a
 

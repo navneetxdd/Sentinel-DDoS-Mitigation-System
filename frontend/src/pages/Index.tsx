@@ -76,7 +76,7 @@ const Index = () => {
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold tracking-tight mb-1">
-              <span className="neon-text">BAW2M</span>
+              <span className="neon-text">Sentinel</span>
             </h1>
             <p className="text-muted-foreground">
               Behavior-Aware DDoS Detection &amp; Adaptive Mitigation

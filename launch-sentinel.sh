@@ -75,6 +75,19 @@ fi
 # 1. Ryu SDN Controller (Crucial for active mitigation)
 spawn_terminal "Sentinel SDN Controller" "bash -c 'echo \"[SENTINEL SDN CONTROLLER]\"; python3 scripts/start_ryu.py; exec bash'"
 
+# Wait for SDN controller to be ready
+echo "Waiting for SDN controller to start..."
+for i in $(seq 1 30); do
+    if curl -s http://127.0.0.1:8080/stats/switches >/dev/null 2>&1; then
+        echo "SDN controller is ready."
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        echo "Warning: SDN controller did not respond within 30s. Proceeding anyway."
+    fi
+    sleep 1
+done
+
 # 2. C Backend (Data Plane)
 # We point it to the local controller started above
 spawn_terminal "Sentinel Backend" "bash -c 'echo \"[SENTINEL BACKEND]\"; sudo ./sentinel_pipeline -i lo -q 0 --controller http://127.0.0.1:8080 -w 8765; exec bash'"

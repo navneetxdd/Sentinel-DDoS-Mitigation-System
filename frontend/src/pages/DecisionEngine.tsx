@@ -80,11 +80,11 @@ const DecisionEngine = () => {
             isDDoS={simulatingDDoS}
             onFlashCrowdToggle={() => {
               setSimulatingFlashCrowd((prev) => !prev);
-              if (!simulatingFlashCrowd) ws.sendCommand("simulate_flash_crowd");
+              ws.sendCommand(simulatingFlashCrowd ? "stop_simulation" : "simulate_flash_crowd");
             }}
             onDDoSToggle={() => {
               setSimulatingDDoS((prev) => !prev);
-              if (!simulatingDDoS) ws.sendCommand("simulate_ddos");
+              ws.sendCommand(simulatingDDoS ? "stop_simulation" : "simulate_ddos");
             }}
           />
         </div>

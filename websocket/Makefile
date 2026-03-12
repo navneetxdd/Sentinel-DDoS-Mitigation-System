@@ -1,7 +1,7 @@
 # Sentinel DDoS Core - WebSocket Server Makefile
 
 CC       ?= gcc
-CFLAGS   := -Wall -Wextra -O2 -std=c11 -I.. -I../sentinel_core -pthread -MMD -MP
+CFLAGS   := -Wall -Wextra -Werror -O2 -std=c11 -I.. -I../sentinel_core -pthread -MMD -MP -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 LDFLAGS  := -lssl -lcrypto
 AR       := ar
 ARFLAGS  := rcs
