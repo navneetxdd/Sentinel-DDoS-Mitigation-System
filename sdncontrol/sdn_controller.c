@@ -128,6 +128,50 @@ static void resp_buf_free(resp_buf_t *buf)
     buf->len = buf->cap = 0;
 }
 
+static void set_last_error_message(sdn_context_t *ctx, const char *prefix, const char *detail)
+{
+    if (!ctx || !prefix) return;
+
+    const char *message = detail ? detail : "";
+    size_t prefix_len = strlen(prefix);
+    size_t buf_len = sizeof(ctx->last_error);
+
+    if (prefix_len >= buf_len) {
+        memcpy(ctx->last_error, prefix, buf_len - 1);
+        ctx->last_error[buf_len - 1] = '\0';
+        return;
+    }
+
+    memcpy(ctx->last_error, prefix, prefix_len);
+    ctx->last_error[prefix_len] = '\0';
+
+    size_t remaining = buf_len - prefix_len - 1;
+    if (remaining == 0) return;
+
+    snprintf(ctx->last_error + prefix_len, remaining + 1, "%.*s", (int)remaining, message);
+}
+
+static void set_last_error_http(sdn_context_t *ctx, long http_code, const char *detail)
+{
+    if (!ctx) return;
+
+    int written = snprintf(ctx->last_error, sizeof(ctx->last_error), "HTTP %ld: ", http_code);
+    if (written < 0) {
+        ctx->last_error[0] = '\0';
+        return;
+    }
+
+    size_t used = (size_t)written;
+    if (used >= sizeof(ctx->last_error)) {
+        ctx->last_error[sizeof(ctx->last_error) - 1] = '\0';
+        return;
+    }
+
+    size_t remaining = sizeof(ctx->last_error) - used - 1;
+    const char *message = detail ? detail : "";
+    snprintf(ctx->last_error + used, remaining + 1, "%.*s", (int)remaining, message);
+}
+
 /* format an IPv4 address in network byte order to "x.x.x.x" */
 static void ip_to_str(uint32_t ip_nbo, char *out, size_t len)
 {
@@ -673,11 +717,11 @@ static void *sdn_worker(void *arg)
                     rule.rule_id, http_code);
             pthread_mutex_lock(&ctx->last_error_mutex);
             if (rc != 0) {
-                snprintf(ctx->last_error, sizeof(ctx->last_error), "Curl: %s",
-                         ctx->errbuf[0] ? ctx->errbuf : "connection failed");
+                set_last_error_message(ctx, "Curl: ",
+                                       ctx->errbuf[0] ? ctx->errbuf : "connection failed");
             } else {
-                snprintf(ctx->last_error, sizeof(ctx->last_error), "HTTP %ld: %s",
-                         http_code, ctx->errbuf[0] ? ctx->errbuf : "request failed");
+                set_last_error_http(ctx, http_code,
+                                    ctx->errbuf[0] ? ctx->errbuf : "request failed");
             }
             pthread_mutex_unlock(&ctx->last_error_mutex);
             if (meter_added) {
