@@ -4,7 +4,7 @@
 
 CC       ?= gcc
 AR       ?= ar
-CFLAGS   := -Wall -Wextra -O2 -std=c11 -I.. -I../sentinel_core
+CFLAGS   := -Wall -Wextra -Werror -O2 -std=c11 -I.. -I../sentinel_core -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 LDLIBS   := -lcurl
 
 SRCS     := sdn_controller.c

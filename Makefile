@@ -49,19 +49,19 @@ help:
 libs: build_fe build_de build_sdn build_fb build_ws
 
 build_fe:
-	$(MAKE) -B -C $(FE_DIR)
+	$(MAKE) -C $(FE_DIR)
 
 build_de:
-	$(MAKE) -B -C $(DE_DIR)
+	$(MAKE) -C $(DE_DIR)
 
 build_sdn:
-	$(MAKE) -B -C $(SDN_DIR)
+	$(MAKE) -C $(SDN_DIR)
 
 build_fb:
-	$(MAKE) -B -C $(FEEDBACK_DIR)
+	$(MAKE) -C $(FEEDBACK_DIR)
 
 build_ws:
-	$(MAKE) -B -C $(WS_DIR)
+	$(MAKE) -C $(WS_DIR)
 
 # ---- pipeline binary (requires all libs; sentinel_core/ is -I only). Use -MMD for .h deps. ----
 
