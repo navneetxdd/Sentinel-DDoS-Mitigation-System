@@ -1,12 +1,12 @@
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { GridLayout, StatCard, Panel } from "@/components/layout/GridPanel";
 import { StatusBadge, StatusType } from "@/components/dashboard/StatusBadge";
-import { KPICard } from "@/components/dashboard/KPICard";
 import { RiskGauge } from "@/components/dashboard/RiskGauge";
 import { TrafficChart } from "@/components/dashboard/TrafficChart";
 import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
 import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
-
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
 import {
   Activity,
@@ -16,13 +16,14 @@ import {
   Wifi,
   Server,
   Cpu,
-  HardDrive
+  HardDrive,
+  Hexagon,
 } from "lucide-react";
 
 const Index = () => {
   const ws = useSentinelWebSocket();
 
-  /* Real data from backend streams */
+  /* Real data from backend streams - NEVER mock */
   const pps = ws.metrics?.packets_per_sec ?? 0;
   const flows = ws.metrics?.active_flows ?? 0;
   const threatScore = ws.featureImportance?.avg_threat_score ?? 0;
@@ -51,8 +52,6 @@ const Index = () => {
     }
   }
 
-
-
   const formatPps = (value: number): string => {
     if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
     if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
@@ -71,77 +70,67 @@ const Index = () => {
 
   return (
     <DashboardLayout connected={ws.connected}>
-      <div className="space-y-6 animate-fade-in">
-        {/* Header */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight mb-1">
-              <span className="neon-text">Sentinel</span>
-            </h1>
-            <p className="text-muted-foreground">
-              Behavior-Aware DDoS Detection &amp; Adaptive Mitigation
-            </p>
-          </div>
-          <StatusBadge status={getStatus()} />
-        </div>
+      <div className="space-y-8 animate-fade-in">
+        {/* Page Header */}
+        <PageHeader
+          title="Sentinel"
+          description="Behavior-Aware DDoS Detection & Adaptive Mitigation"
+          icon={<Hexagon className="w-6 h-6 text-foreground" />}
+          action={<StatusBadge status={getStatus()} />}
+        />
 
-        {/* KPI Grid — same 4-card layout as original */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <KPICard
-            title="Current Traffic Rate"
+        {/* Primary KPI Grid - 4 Columns */}
+        <GridLayout cols={4} gap="md">
+          <StatCard
+            label="Traffic Rate"
             value={formatPps(pps)}
-            subtitle="packets per second"
-            icon={Activity}
-            variant="primary"
+            unit="pps"
+            icon={<Activity className="w-5 h-5" />}
+            variant="default"
           />
-          <KPICard
-            title="Active Connections"
+          <StatCard
+            label="Active Flows"
             value={flows.toLocaleString()}
-            subtitle="concurrent sessions"
-            icon={Layers}
+            unit="sessions"
+            icon={<Layers className="w-5 h-5" />}
             variant="success"
           />
-          <KPICard
-            title="Mitigation Status"
+          <StatCard
+            label="Mitigation"
             value={mitigationActive ? "Active" : "Idle"}
-            subtitle={mitigationActive ? `${totalBlocked} blocked, ${totalRateLimited} rate-limited` : "no active rules"}
-            icon={Shield}
-            variant={mitigationActive ? "danger" : "primary"}
+            unit={mitigationActive ? `${totalBlocked + totalRateLimited} rules` : "-"}
+            icon={<Shield className="w-5 h-5" />}
+            variant={mitigationActive ? "danger" : "default"}
           />
-          <KPICard
-            title="Uptime"
+          <StatCard
+            label="Pipeline Status"
             value={ws.connected ? "Online" : "Offline"}
-            subtitle={ws.connected ? "pipeline connected" : "pipeline disconnected"}
-            icon={TrendingUp}
-            variant="success"
+            unit={ws.connected ? "live" : "disconnected"}
+            icon={<TrendingUp className="w-5 h-5" />}
+            variant={ws.connected ? "success" : "danger"}
           />
-        </div>
+        </GridLayout>
 
-        {/* Main Content Grid — Traffic Chart + Risk Gauge + AI Analyst (focal point) */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1">
+        {/* Main Monitoring Section - 3 Columns (Chart + Gauge + AI) */}
+        <GridLayout cols={3} gap="lg">
+          <Panel title="Traffic Trends" variant="default">
             <TrafficChart data={ws.trafficHistory} isAttack={riskScore >= 70} />
-          </div>
-          <div>
+          </Panel>
+          <Panel title="Risk Assessment" variant={riskScore >= 70 ? "highlight" : "default"}>
             <RiskGauge value={riskScore} />
-          </div>
+          </Panel>
           <div>
             <AIAnalystWidget telemetry={aiTelemetry} />
           </div>
-        </div>
+        </GridLayout>
 
-        {/* Threat Intelligence — Top Sources + Active Connections (primary focus during attack) */}
-        <div className="cyber-card glow-border rounded-lg overflow-hidden">
-          <div className="p-4 border-b border-border">
-            <h2 className="text-lg font-semibold tracking-wide flex items-center gap-2">
-              <Shield className="w-5 h-5 text-primary" />
-              Threat Intelligence
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Top traffic sources with ML threat scores • Active connections
-            </p>
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-4">
+        {/* Threat Intelligence Section - 2 Columns */}
+        <Panel
+          title="Threat Intelligence"
+          description="Real-time traffic analysis with ML-powered threat scoring"
+          variant="default"
+        >
+          <GridLayout cols={2} gap="lg">
             <TopIPsTable
               isAttack={riskScore >= 70}
               sources={ws.topSources}
@@ -149,95 +138,65 @@ const Index = () => {
               rateLimitedIPs={ws.rateLimitedIPs}
             />
             <ActiveConnectionsTable connections={ws.connections} />
-          </div>
-        </div>
+          </GridLayout>
+        </Panel>
 
-        {/* System Health — same 4-card layout as original */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="cyber-card glow-border p-4 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-md bg-status-success/10">
-                <Wifi className="w-4 h-4 text-status-success" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Network</p>
-                <p className={`font-semibold ${ws.connected ? "text-status-success" : "text-status-danger"}`}>
-                  {ws.connected ? "Healthy" : "Disconnected"}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="cyber-card glow-border p-4 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-md bg-status-success/10">
-                <Server className="w-4 h-4 text-status-success" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">ML Engine</p>
-                <p className="font-semibold text-status-success">
-                  {mlOps > 0 ? `${mlOps.toLocaleString()}/s` : "Online"}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="cyber-card glow-border p-4 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-md bg-status-success/10">
-                <Cpu className="w-4 h-4 text-status-success" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">CPU Usage</p>
-                <p className="font-semibold font-mono text-sm">{cpuPercent.toFixed(1)}%</p>
-              </div>
-            </div>
-          </div>
-          <div className="cyber-card glow-border p-4 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-md bg-secondary">
-                <HardDrive className="w-4 h-4 text-foreground" />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Memory</p>
-                <p className="font-semibold font-mono text-sm">{memMB.toFixed(1)} MB</p>
-              </div>
-            </div>
-          </div>
-          <div className="cyber-card glow-border p-4 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-md ${ws.mitigationStatus?.kernel_dropping_enabled ? "bg-status-success/10" : "bg-cyber-orange/10"}`}>
-                <Shield className={`w-4 h-4 ${ws.mitigationStatus?.kernel_dropping_enabled ? "text-status-success" : "text-cyber-orange"}`} />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Kernel Drops</p>
-                <p className={`font-semibold text-sm ${ws.mitigationStatus?.kernel_dropping_enabled ? "text-status-success" : "text-cyber-orange"}`}>
-                  {ws.mitigationStatus?.kernel_dropping_enabled ? "Active" : "Disabled (fallback)"}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="cyber-card glow-border p-4 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-md ${
-                ws.mitigationStatus?.sdn_connected === 1 ? "bg-status-success/10" :
-                ws.mitigationStatus?.sdn_connected === 0 ? "bg-cyber-red/10" : "bg-muted"
-              }`}>
-                <Server className={`w-4 h-4 ${
-                  ws.mitigationStatus?.sdn_connected === 1 ? "text-status-success" :
-                  ws.mitigationStatus?.sdn_connected === 0 ? "text-cyber-red" : "text-muted-foreground"
-                }`} />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">SDN Controller</p>
-                <p className={`font-semibold text-sm ${
-                  ws.mitigationStatus?.sdn_connected === 1 ? "text-status-success" :
-                  ws.mitigationStatus?.sdn_connected === 0 ? "text-cyber-red" : "text-muted-foreground"
-                }`}>
-                  {ws.mitigationStatus?.sdn_connected === 1 ? "Connected" :
-                   ws.mitigationStatus?.sdn_connected === 0 ? "Unreachable" : "Unknown"}
-                </p>
-              </div>
-            </div>
-          </div>
+        {/* System Health Grid - 6 Columns */}
+        <div>
+          <h2 className="text-lg font-semibold mb-4">System Health</h2>
+          <GridLayout cols={4} gap="md">
+            <StatCard
+              label="Network"
+              value={ws.connected ? "Healthy" : "Disconnected"}
+              icon={<Wifi className="w-5 h-5" />}
+              variant={ws.connected ? "success" : "danger"}
+            />
+            <StatCard
+              label="ML Engine"
+              value={mlOps > 0 ? `${mlOps.toLocaleString()}` : "Online"}
+              unit={mlOps > 0 ? "ops/s" : ""}
+              icon={<Server className="w-5 h-5" />}
+              variant={mlOps > 0 ? "success" : "default"}
+            />
+            <StatCard
+              label="CPU Usage"
+              value={`${cpuPercent.toFixed(1)}%`}
+              icon={<Cpu className="w-5 h-5" />}
+              variant={cpuPercent > 80 ? "danger" : cpuPercent > 50 ? "warning" : "success"}
+            />
+            <StatCard
+              label="Memory"
+              value={`${memMB.toFixed(1)}`}
+              unit="MB"
+              icon={<HardDrive className="w-5 h-5" />}
+              variant="default"
+            />
+            <StatCard
+              label="Kernel Drops"
+              value={ws.mitigationStatus?.kernel_dropping_enabled ? "Active" : "Disabled"}
+              unit={ws.mitigationStatus?.kernel_dropping_enabled ? "eBPF" : "fallback"}
+              icon={<Shield className="w-5 h-5" />}
+              variant={ws.mitigationStatus?.kernel_dropping_enabled ? "success" : "warning"}
+            />
+            <StatCard
+              label="SDN Controller"
+              value={
+                ws.mitigationStatus?.sdn_connected === 1
+                  ? "Connected"
+                  : ws.mitigationStatus?.sdn_connected === 0
+                  ? "Unreachable"
+                  : "Unknown"
+              }
+              icon={<Server className="w-5 h-5" />}
+              variant={
+                ws.mitigationStatus?.sdn_connected === 1
+                  ? "success"
+                  : ws.mitigationStatus?.sdn_connected === 0
+                  ? "danger"
+                  : "default"
+              }
+            />
+          </GridLayout>
         </div>
       </div>
     </DashboardLayout>

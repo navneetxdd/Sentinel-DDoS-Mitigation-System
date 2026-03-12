@@ -1222,6 +1222,10 @@ int main(int argc, char **argv)
     }
     uint32_t classifications_this_sec = 0;
 
+    /* SDN Health Check Timer - probe every 5 seconds to catch early connectivity */
+    uint64_t last_sdn_health_check = 0;
+    uint64_t sdn_health_check_interval = 5;  /* seconds */
+
     int whitelist_map_fd = find_map_fd_by_name("whitelist_map");
     if (whitelist_map_fd > 0 && n_whitelist_static > 0) {
         pipeline_sync_whitelist_to_bpf(whitelist_map_fd, de, whitelist_static, n_whitelist_static);
@@ -1374,6 +1378,14 @@ int main(int argc, char **argv)
                 + (total_rate_limited > TELEM_IP_MAX ? TELEM_IP_MAX : total_rate_limited);
             ms.auto_mitigation_enabled = atomic_load_explicit(&g_auto_mitigation_enabled, memory_order_acquire);
             ms.kernel_dropping_enabled = (blacklist_map_fd > 0) ? 1 : 0;
+            
+            /* Periodic SDN health check (every 5s) to catch early connectivity status */
+            if (now - last_sdn_health_check >= sdn_health_check_interval) {
+                int health = sdn_health_check(sdn);
+                atomic_store_explicit(&g_sdn_connected, (health == 0) ? 1 : 0, memory_order_release);
+                last_sdn_health_check = now;
+            }
+            
             ms.sdn_connected = atomic_load_explicit(&g_sdn_connected, memory_order_acquire);
             sdn_get_last_error(sdn, ms.sdn_last_error, sizeof(ms.sdn_last_error));
             ws_update_mitigation_status(ws, &ms);
