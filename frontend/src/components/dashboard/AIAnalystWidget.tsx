@@ -64,13 +64,13 @@ export const AIAnalystWidget = ({ telemetry }: AIAnalystWidgetProps) => {
   }, [analysis]);
 
   return (
-    <div className="cyber-card glow-border p-6 rounded-xl flex flex-col h-[300px]">
-      <div className="flex items-center gap-3 mb-4 pb-2 border-b border-white/5">
-        <div className={`p-2 rounded-lg ${telemetry.threatScore > 0.5 ? "bg-cyber-red/20 text-cyber-red animate-pulse" : "bg-primary/20 text-primary"}`}>
+    <div className="cyber-card glow-border p-5 rounded-lg flex flex-col h-[300px]">
+      <div className="flex items-center gap-3 mb-4 pb-3 border-b border-border">
+        <div className={`p-2 rounded-md ${telemetry.threatScore > 0.5 ? "bg-status-danger/15 text-status-danger" : "bg-secondary text-foreground"}`}>
           <Bot className="w-5 h-5" />
         </div>
         <div>
-          <h3 className="font-semibold text-lg tracking-wide">Gemini XAI Analyst</h3>
+          <h3 className="font-semibold tracking-tight">Gemini XAI Analyst</h3>
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <Activity className="w-3 h-3" /> Continuous Monitoring Active
           </p>
@@ -81,26 +81,26 @@ export const AIAnalystWidget = ({ telemetry }: AIAnalystWidgetProps) => {
         ref={scrollRef}
         className="flex-1 overflow-y-auto pr-2 space-y-4 font-mono text-sm leading-relaxed"
       >
-        <div className={`relative p-4 rounded-lg bg-black/40 border-l-2 ${telemetry.threatScore > 0.5 ? "border-cyber-red" : "border-cyber-green"}`}>
+        <div className={`relative p-4 rounded-md bg-secondary/40 border-l-2 ${telemetry.threatScore > 0.5 ? "border-status-danger" : "border-status-success"}`}>
           {isAnalyzing && (
-            <div className="flex items-center gap-2 mb-2 text-cyber-blue animate-pulse">
-              <span className="w-2 h-2 rounded-full bg-cyber-blue"></span>
-              <span className="w-2 h-2 rounded-full bg-cyber-blue animation-delay-200"></span>
-              <span className="w-2 h-2 rounded-full bg-cyber-blue animation-delay-400"></span>
+            <div className="flex items-center gap-2 mb-2 text-foreground/70 pulse-glow">
+              <span className="w-2 h-2 rounded-full bg-foreground/70"></span>
+              <span className="w-2 h-2 rounded-full bg-foreground/70"></span>
+              <span className="w-2 h-2 rounded-full bg-foreground/70"></span>
             </div>
           )}
 
           <p className="whitespace-pre-wrap text-muted-foreground break-words">{analysis}</p>
 
           {!isAnalyzing && telemetry.threatScore <= 0.5 && (
-            <div className="mt-4 flex items-center gap-2 text-cyber-green/70">
+            <div className="mt-4 flex items-center gap-2 text-status-success/80">
               <ShieldCheck className="w-4 h-4" />
               <span>Baseline normal. Risk Score: {(telemetry.threatScore * 100).toFixed(1)}%</span>
             </div>
           )}
 
           {!isAnalyzing && telemetry.threatScore > 0.5 && (
-            <div className="mt-4 flex items-center gap-2 text-cyber-red/70">
+            <div className="mt-4 flex items-center gap-2 text-status-danger/80">
               <AlertTriangle className="w-4 h-4" />
               <span>Threat active. Risk Score: {(telemetry.threatScore * 100).toFixed(1)}%</span>
             </div>

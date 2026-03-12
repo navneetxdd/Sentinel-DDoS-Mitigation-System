@@ -31,10 +31,10 @@ interface ProtocolTooltipProps {
 
 /* Same color mapping as original */
 const COLORS = {
-  TCP: "hsl(190, 100%, 50%)",
-  UDP: "hsl(160, 84%, 45%)",
-  ICMP: "hsl(0, 72%, 51%)",
-  Other: "hsl(25, 95%, 53%)",
+  TCP: "hsl(0, 0%, 72%)",
+  UDP: "hsl(142, 50%, 45%)",
+  ICMP: "hsl(0, 62%, 50%)",
+  Other: "hsl(38, 90%, 50%)",
 };
 
 export function ProtocolChart({ className, isAttack = false, data }: ProtocolChartProps) {
@@ -43,7 +43,7 @@ export function ProtocolChart({ className, isAttack = false, data }: ProtocolCha
     ? [
         { protocol: "TCP", count: data.tcp_bytes, color: COLORS.TCP },
         { protocol: "UDP", count: data.udp_bytes, color: COLORS.UDP },
-        { protocol: "ICMP", count: data.icmp_bytes, color: isAttack ? "hsl(0, 72%, 51%)" : COLORS.ICMP },
+        { protocol: "ICMP", count: data.icmp_bytes, color: isAttack ? "hsl(0, 62%, 50%)" : COLORS.ICMP },
         { protocol: "Other", count: data.other_bytes, color: COLORS.Other },
       ]
     : [];
@@ -63,7 +63,7 @@ export function ProtocolChart({ className, isAttack = false, data }: ProtocolCha
   };
 
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="mb-4">
         <h3 className="font-semibold">Protocol Distribution</h3>
         <p className="text-xs text-muted-foreground">Request count by protocol</p>

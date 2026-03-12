@@ -12,173 +12,142 @@
 
 @layer base {
   :root {
-    /* Pure black & white theme — no colored accents */
-    --background: 0 0% 5%;
-    --foreground: 0 0% 93%;
+    --background: 0 0% 4%;
+    --foreground: 0 0% 95%;
 
-    --card: 0 0% 7%;
-    --card-foreground: 0 0% 93%;
+    --card: 0 0% 6%;
+    --card-foreground: 0 0% 95%;
 
-    --popover: 0 0% 9%;
-    --popover-foreground: 0 0% 93%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 95%;
 
-    /* White primary — NOT cyan, NOT green */
-    --primary: 0 0% 90%;
-    --primary-foreground: 0 0% 5%;
+    --primary: 0 0% 95%;
+    --primary-foreground: 0 0% 4%;
 
-    --secondary: 0 0% 11%;
-    --secondary-foreground: 0 0% 80%;
+    --secondary: 0 0% 12%;
+    --secondary-foreground: 0 0% 85%;
 
-    --muted: 0 0% 11%;
-    --muted-foreground: 0 0% 45%;
+    --muted: 0 0% 10%;
+    --muted-foreground: 0 0% 55%;
 
-    --accent: 0 0% 13%;
-    --accent-foreground: 0 0% 93%;
+    --accent: 0 0% 18%;
+    --accent-foreground: 0 0% 95%;
 
-    --destructive: 0 72% 51%;
+    --destructive: 0 62% 50%;
     --destructive-foreground: 0 0% 98%;
 
     --border: 0 0% 15%;
     --input: 0 0% 15%;
-    --ring: 0 0% 40%;
+    --ring: 0 0% 70%;
 
-    --radius: 0.75rem;
+    --radius: 0.5rem;
 
-    /* Rainbow colors — used ONLY for charts and status badges */
+    --status-success: 142 50% 45%;
+    --status-warning: 38 90% 50%;
+    --status-danger: 0 62% 50%;
+    --status-info: 210 50% 50%;
+
     --cyber-cyan: 190 100% 50%;
-    --cyber-green: 142 71% 45%;
-    --cyber-yellow: 45 93% 58%;
+    --cyber-green: 142 50% 45%;
+    --cyber-yellow: 38 90% 50%;
     --cyber-orange: 25 95% 53%;
-    --cyber-red: 0 72% 51%;
+    --cyber-red: 0 62% 50%;
     --cyber-purple: 270 76% 60%;
 
-    /* Minimal/no glow effects */
-    --glow-cyan: none;
-    --glow-green: 0 0 6px hsl(142 71% 45% / 0.15);
-    --glow-red: 0 0 6px hsl(0 72% 51% / 0.15);
-    --glow-yellow: 0 0 6px hsl(45 93% 58% / 0.15);
+    --gradient-card: linear-gradient(180deg, hsl(0 0% 7%), hsl(0 0% 5%));
 
-    /* Neutral gradients — no color tint */
-    --gradient-cyber: linear-gradient(135deg, hsl(0 0% 9% / 0.2), hsl(0 0% 7% / 0.2));
-    --gradient-card: linear-gradient(180deg, hsl(0 0% 8%), hsl(0 0% 7%));
-    --gradient-border: linear-gradient(135deg, hsl(0 0% 18% / 0.1), hsl(0 0% 14% / 0.1));
-
-    /* Sidebar — same dark neutral */
     --sidebar-background: 0 0% 5%;
-    --sidebar-foreground: 0 0% 93%;
-    --sidebar-primary: 0 0% 90%;
-    --sidebar-primary-foreground: 0 0% 5%;
-    --sidebar-accent: 0 0% 11%;
-    --sidebar-accent-foreground: 0 0% 93%;
-    --sidebar-border: 0 0% 15%;
-    --sidebar-ring: 0 0% 40%;
+    --sidebar-foreground: 0 0% 95%;
+    --sidebar-primary: 0 0% 95%;
+    --sidebar-primary-foreground: 0 0% 4%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 0 0% 95%;
+    --sidebar-border: 0 0% 12%;
+    --sidebar-ring: 0 0% 70%;
   }
-}
 
-@layer base {
   * {
     @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
   }
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+  }
+
+  #root {
+    min-height: 100vh;
   }
 
   .font-mono {
     font-family: 'JetBrains Mono', monospace;
   }
+
+  ::selection {
+    background: hsl(var(--foreground) / 0.12);
+  }
 }
 
 @layer components {
-
-  /* Card — clean, no glow */
   .cyber-card {
-    @apply relative bg-card rounded-lg border border-border overflow-hidden;
+    @apply bg-card rounded-md border border-border;
     background: var(--gradient-card);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.18);
   }
 
-  .cyber-card::before {
-    content: '';
-    @apply absolute inset-0 rounded-lg opacity-0 transition-opacity duration-300;
-    background: var(--gradient-cyber);
-  }
-
-  .cyber-card:hover::before {
-    @apply opacity-100;
-  }
-
-  /* Border — no glow on hover */
   .glow-border {
-    @apply relative;
+    @apply transition-colors duration-200;
   }
 
-  .glow-border::after {
-    content: '';
-    @apply absolute inset-0 rounded-lg pointer-events-none;
-    opacity: 0;
+  .glow-border:hover {
+    @apply border-muted-foreground/30;
   }
 
-  .glow-border:hover::after {
-    opacity: 0;
-  }
-
-  /* Status badges — keep colored for semantic meaning */
   .status-normal {
-    @apply bg-cyber-green/20 text-cyber-green border-cyber-green/30;
-    box-shadow: var(--glow-green);
+    @apply bg-status-success/15 text-status-success border-status-success/20;
   }
 
   .status-warning {
-    @apply bg-cyber-yellow/20 text-cyber-yellow border-cyber-yellow/30;
-    box-shadow: var(--glow-yellow);
+    @apply bg-status-warning/15 text-status-warning border-status-warning/20;
   }
 
   .status-danger {
-    @apply bg-cyber-red/20 text-cyber-red border-cyber-red/30;
-    box-shadow: var(--glow-red);
+    @apply bg-status-danger/15 text-status-danger border-status-danger/20;
   }
 
-  /* Pulse animation */
   .pulse-glow {
-    animation: pulse-glow 2s ease-in-out infinite;
+    animation: pulse-subtle 2s ease-in-out infinite;
   }
 
-  @keyframes pulse-glow {
-
+  @keyframes pulse-subtle {
     0%,
     100% {
       opacity: 1;
     }
 
     50% {
-      opacity: 0.5;
+      opacity: 0.6;
     }
   }
 
-  /* Scan line — disabled */
-  .scan-line {
-    @apply relative overflow-hidden;
-  }
-
-  .scan-line::after {
-    display: none;
-  }
-
-  /* Grid pattern — very subtle */
   .grid-pattern {
     background-image:
-      linear-gradient(hsl(0 0% 14% / 0.12) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(0 0% 14% / 0.12) 1px, transparent 1px);
-    background-size: 50px 50px;
+      linear-gradient(hsl(0 0% 10% / 0.45) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(0 0% 10% / 0.45) 1px, transparent 1px);
+    background-size: 60px 60px;
   }
 
   .counter {
     @apply font-mono tabular-nums;
   }
 
-  /* No neon text glow */
   .neon-text {
+    @apply text-foreground;
     text-shadow: none;
   }
 
@@ -188,6 +157,50 @@
 }
 
 @layer utilities {
+  .bg-status-success {
+    background-color: hsl(var(--status-success));
+  }
+
+  .bg-status-warning {
+    background-color: hsl(var(--status-warning));
+  }
+
+  .bg-status-danger {
+    background-color: hsl(var(--status-danger));
+  }
+
+  .bg-status-info {
+    background-color: hsl(var(--status-info));
+  }
+
+  .text-status-success {
+    color: hsl(var(--status-success));
+  }
+
+  .text-status-warning {
+    color: hsl(var(--status-warning));
+  }
+
+  .text-status-danger {
+    color: hsl(var(--status-danger));
+  }
+
+  .text-status-info {
+    color: hsl(var(--status-info));
+  }
+
+  .border-status-success {
+    border-color: hsl(var(--status-success));
+  }
+
+  .border-status-warning {
+    border-color: hsl(var(--status-warning));
+  }
+
+  .border-status-danger {
+    border-color: hsl(var(--status-danger));
+  }
+
   .bg-cyber-cyan {
     background-color: hsl(var(--cyber-cyan));
   }

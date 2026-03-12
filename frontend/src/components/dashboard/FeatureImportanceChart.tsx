@@ -101,7 +101,7 @@ export function FeatureImportanceChart({
       return (
         <div className="chart-tooltip">
           <p className="font-medium mb-1">{p.name}</p>
-          <p className="font-mono text-primary">{label}</p>
+          <p className="font-mono text-foreground">{label}</p>
         </div>
       );
     }
@@ -109,7 +109,7 @@ export function FeatureImportanceChart({
   };
 
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
           <h3 className="font-semibold">
@@ -127,7 +127,7 @@ export function FeatureImportanceChart({
               <button
                 type="button"
                 onClick={() => setShowShap((s) => !s)}
-                className="text-xs text-primary hover:underline"
+                className="text-xs text-foreground hover:underline"
               >
                 {showShap ? "Show Heuristic" : "Show SHAP"}
               </button>
@@ -137,10 +137,10 @@ export function FeatureImportanceChart({
               onClick={onRequestShap}
               disabled={shapLoading}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors",
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors border",
                 shapLoading
-                  ? "bg-muted text-muted-foreground cursor-not-allowed"
-                  : "bg-primary/10 text-primary hover:bg-primary/20"
+                  ? "bg-muted text-muted-foreground border-border cursor-not-allowed"
+                  : "bg-secondary text-foreground border-border hover:bg-accent"
               )}
             >
               <Zap className="w-3.5 h-3.5" />
@@ -150,9 +150,7 @@ export function FeatureImportanceChart({
         )}
       </div>
 
-      {shapError && (
-        <p className="text-xs text-cyber-red mb-2">{shapError}</p>
-      )}
+      {shapError && <p className="text-xs text-status-danger mb-2">{shapError}</p>}
 
       <div className="h-72">
         {features.length > 0 ? (

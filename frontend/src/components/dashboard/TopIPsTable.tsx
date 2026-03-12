@@ -41,21 +41,21 @@ export function TopIPsTable({
     switch (status) {
       case "blocked":
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-cyber-red/10 text-cyber-red border border-cyber-red/20">
+          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-danger/10 text-status-danger border border-status-danger/20">
             <Shield className="w-3 h-3" />
             Blocked
           </span>
         );
       case "rate-limited":
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-cyber-yellow/10 text-cyber-yellow border border-cyber-yellow/20">
+          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-warning/10 text-status-warning border border-status-warning/20">
             <AlertTriangle className="w-3 h-3" />
             Rate Limited
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-cyber-green/10 text-cyber-green border border-cyber-green/20">
+          <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-full bg-status-success/10 text-status-success border border-status-success/20">
             <CheckCircle className="w-3 h-3" />
             Normal
           </span>
@@ -64,7 +64,7 @@ export function TopIPsTable({
   };
 
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="mb-4">
         <h3 className="font-semibold">Top Source IPs</h3>
         <p className="text-xs text-muted-foreground">Highest traffic sources</p>
@@ -93,7 +93,7 @@ export function TopIPsTable({
                   <td className="py-3">
                     <span className={cn(
                       "font-mono text-sm",
-                      item.requests > 50000 && "text-cyber-red font-bold"
+                      item.requests > 50000 && "text-status-danger font-bold"
                     )}>
                       {item.requests.toLocaleString()}
                     </span>
@@ -101,8 +101,8 @@ export function TopIPsTable({
                   <td className="py-3">
                     <span className={cn(
                       "font-mono text-sm",
-                      (item.threatScore ?? 0) >= 0.7 && "text-cyber-red font-bold",
-                      (item.threatScore ?? 0) >= 0.3 && (item.threatScore ?? 0) < 0.7 && "text-cyber-yellow"
+                      (item.threatScore ?? 0) >= 0.7 && "text-status-danger font-bold",
+                      (item.threatScore ?? 0) >= 0.3 && (item.threatScore ?? 0) < 0.7 && "text-status-warning"
                     )}>
                       {((item.threatScore ?? 0) * 100).toFixed(0)}%
                     </span>

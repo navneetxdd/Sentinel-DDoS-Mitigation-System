@@ -10,16 +10,16 @@ export function RiskGauge({ value, className }: RiskGaugeProps) {
   const rotation = (clampedValue / 100) * 180 - 90;
 
   const getRiskLevel = (val: number) => {
-    if (val < 30) return { label: "Low", color: "text-cyber-green" };
-    if (val < 60) return { label: "Medium", color: "text-cyber-yellow" };
-    if (val < 80) return { label: "High", color: "text-cyber-orange" };
-    return { label: "Critical", color: "text-cyber-red" };
+    if (val < 30) return { label: "Low", color: "text-status-success" };
+    if (val < 60) return { label: "Medium", color: "text-status-warning" };
+    if (val < 80) return { label: "High", color: "text-status-warning" };
+    return { label: "Critical", color: "text-status-danger" };
   };
 
   const risk = getRiskLevel(clampedValue);
 
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <p className="text-sm text-muted-foreground font-medium mb-4">Risk Score</p>
       
       <div className="relative w-full aspect-[2/1] max-w-[200px] mx-auto">
@@ -27,10 +27,9 @@ export function RiskGauge({ value, className }: RiskGaugeProps) {
         <svg viewBox="0 0 200 100" className="w-full h-full">
           <defs>
             <linearGradient id="riskGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="hsl(160, 84%, 45%)" />
-              <stop offset="40%" stopColor="hsl(45, 93%, 58%)" />
-              <stop offset="70%" stopColor="hsl(25, 95%, 53%)" />
-              <stop offset="100%" stopColor="hsl(0, 72%, 51%)" />
+              <stop offset="0%" stopColor="hsl(142, 50%, 45%)" />
+              <stop offset="50%" stopColor="hsl(38, 90%, 50%)" />
+              <stop offset="100%" stopColor="hsl(0, 62%, 50%)" />
             </linearGradient>
           </defs>
           
@@ -57,11 +56,11 @@ export function RiskGauge({ value, className }: RiskGaugeProps) {
 
         {/* Needle */}
         <div 
-          className="absolute bottom-0 left-1/2 w-1 h-16 origin-bottom transition-transform duration-1000 ease-out"
+          className="absolute bottom-0 left-1/2 w-0.5 h-16 origin-bottom transition-transform duration-1000 ease-out"
           style={{ transform: `translateX(-50%) rotate(${rotation}deg)` }}
         >
-          <div className="w-1 h-full bg-gradient-to-t from-foreground to-transparent rounded-full" />
-          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-3 h-3 bg-foreground rounded-full" />
+          <div className="w-0.5 h-full bg-gradient-to-t from-foreground to-transparent rounded-full" />
+          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-2 h-2 bg-foreground rounded-full" />
         </div>
 
         {/* Center Value */}

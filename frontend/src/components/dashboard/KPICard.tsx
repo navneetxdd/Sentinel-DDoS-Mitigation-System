@@ -20,20 +20,20 @@ const variantStyles = {
     iconColor: "text-foreground",
   },
   primary: {
-    iconBg: "bg-primary/10",
-    iconColor: "text-primary",
+    iconBg: "bg-muted",
+    iconColor: "text-foreground",
   },
   success: {
-    iconBg: "bg-cyber-green/10",
-    iconColor: "text-cyber-green",
+    iconBg: "bg-status-success/10",
+    iconColor: "text-status-success",
   },
   warning: {
-    iconBg: "bg-cyber-yellow/10",
-    iconColor: "text-cyber-yellow",
+    iconBg: "bg-status-warning/10",
+    iconColor: "text-status-warning",
   },
   danger: {
-    iconBg: "bg-cyber-red/10",
-    iconColor: "text-cyber-red",
+    iconBg: "bg-status-danger/10",
+    iconColor: "text-status-danger",
   },
 };
 
@@ -50,7 +50,7 @@ export function KPICard({
 
   return (
     <div className={cn(
-      "cyber-card glow-border p-5 rounded-xl transition-all duration-300 hover:translate-y-[-2px]",
+      "cyber-card glow-border p-5 rounded-lg transition-all duration-200",
       className
     )}>
       <div className="flex items-start justify-between">
@@ -62,8 +62,8 @@ export function KPICard({
               <span className={cn(
                 "text-xs font-medium px-1.5 py-0.5 rounded",
                 trend.isPositive 
-                  ? "text-cyber-green bg-cyber-green/10" 
-                  : "text-cyber-red bg-cyber-red/10"
+                  ? "text-status-success bg-status-success/10" 
+                  : "text-status-danger bg-status-danger/10"
               )}>
                 {trend.isPositive ? "+" : ""}{trend.value}%
               </span>
@@ -74,7 +74,7 @@ export function KPICard({
           )}
         </div>
         <div className={cn(
-          "p-3 rounded-lg",
+          "p-3 rounded-md",
           styles.iconBg
         )}>
           <Icon className={cn("w-5 h-5", styles.iconColor)} />

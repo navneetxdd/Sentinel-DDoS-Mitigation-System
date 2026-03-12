@@ -21,17 +21,17 @@ export function SimulationToggle({
       <button
         onClick={onFlashCrowdToggle}
         className={cn(
-          "flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-all duration-300",
+          "flex items-center gap-2 px-4 py-2.5 rounded-md font-medium text-sm transition-colors border",
           isFlashCrowd
-            ? "bg-cyber-yellow/20 text-cyber-yellow border border-cyber-yellow/40 shadow-[0_0_20px_hsl(45_93%_58%/0.3)]"
-            : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80 border border-transparent"
+            ? "bg-status-warning/10 text-status-warning border-status-warning/20"
+            : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80 border-border"
         )}
       >
         <Users className="w-4 h-4" />
         <span>Simulate Flash Crowd</span>
         <div className={cn(
           "w-8 h-4 rounded-full p-0.5 transition-colors",
-          isFlashCrowd ? "bg-cyber-yellow" : "bg-muted"
+          isFlashCrowd ? "bg-status-warning" : "bg-muted"
         )}>
           <div className={cn(
             "w-3 h-3 rounded-full bg-background transition-transform",
@@ -43,17 +43,17 @@ export function SimulationToggle({
       <button
         onClick={onDDoSToggle}
         className={cn(
-          "flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-all duration-300",
+          "flex items-center gap-2 px-4 py-2.5 rounded-md font-medium text-sm transition-colors border",
           isDDoS
-            ? "bg-cyber-red/20 text-cyber-red border border-cyber-red/40 shadow-[0_0_20px_hsl(0_72%_51%/0.3)]"
-            : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80 border border-transparent"
+            ? "bg-status-danger/10 text-status-danger border-status-danger/20"
+            : "bg-secondary text-muted-foreground hover:text-foreground hover:bg-secondary/80 border-border"
         )}
       >
         <Zap className="w-4 h-4" />
         <span>Simulate DDoS Attack</span>
         <div className={cn(
           "w-8 h-4 rounded-full p-0.5 transition-colors",
-          isDDoS ? "bg-cyber-red" : "bg-muted"
+          isDDoS ? "bg-status-danger" : "bg-muted"
         )}>
           <div className={cn(
             "w-3 h-3 rounded-full bg-background transition-transform",

@@ -131,8 +131,8 @@ const Index = () => {
         </div>
 
         {/* Threat Intelligence — Top Sources + Active Connections (primary focus during attack) */}
-        <div className="cyber-card glow-border rounded-xl overflow-hidden">
-          <div className="p-4 border-b border-white/5">
+        <div className="cyber-card glow-border rounded-lg overflow-hidden">
+          <div className="p-4 border-b border-border">
             <h2 className="text-lg font-semibold tracking-wide flex items-center gap-2">
               <Shield className="w-5 h-5 text-primary" />
               Threat Intelligence
@@ -154,36 +154,36 @@ const Index = () => {
 
         {/* System Health — same 4-card layout as original */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-cyber-green/10">
-                <Wifi className="w-4 h-4 text-cyber-green" />
+              <div className="p-2 rounded-md bg-status-success/10">
+                <Wifi className="w-4 h-4 text-status-success" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Network</p>
-                <p className={`font-semibold ${ws.connected ? "text-cyber-green" : "text-cyber-red"}`}>
+                <p className={`font-semibold ${ws.connected ? "text-status-success" : "text-status-danger"}`}>
                   {ws.connected ? "Healthy" : "Disconnected"}
                 </p>
               </div>
             </div>
           </div>
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-cyber-green/10">
-                <Server className="w-4 h-4 text-cyber-green" />
+              <div className="p-2 rounded-md bg-status-success/10">
+                <Server className="w-4 h-4 text-status-success" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">ML Engine</p>
-                <p className="font-semibold text-cyber-green">
+                <p className="font-semibold text-status-success">
                   {mlOps > 0 ? `${mlOps.toLocaleString()}/s` : "Online"}
                 </p>
               </div>
             </div>
           </div>
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-cyber-green/10">
-                <Cpu className="w-4 h-4 text-cyber-green" />
+              <div className="p-2 rounded-md bg-status-success/10">
+                <Cpu className="w-4 h-4 text-status-success" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">CPU Usage</p>
@@ -191,10 +191,10 @@ const Index = () => {
               </div>
             </div>
           </div>
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-primary/10">
-                <HardDrive className="w-4 h-4 text-primary" />
+              <div className="p-2 rounded-md bg-secondary">
+                <HardDrive className="w-4 h-4 text-foreground" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Memory</p>
@@ -202,34 +202,34 @@ const Index = () => {
               </div>
             </div>
           </div>
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${ws.mitigationStatus?.kernel_dropping_enabled ? "bg-cyber-green/10" : "bg-cyber-orange/10"}`}>
-                <Shield className={`w-4 h-4 ${ws.mitigationStatus?.kernel_dropping_enabled ? "text-cyber-green" : "text-cyber-orange"}`} />
+              <div className={`p-2 rounded-md ${ws.mitigationStatus?.kernel_dropping_enabled ? "bg-status-success/10" : "bg-cyber-orange/10"}`}>
+                <Shield className={`w-4 h-4 ${ws.mitigationStatus?.kernel_dropping_enabled ? "text-status-success" : "text-cyber-orange"}`} />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Kernel Drops</p>
-                <p className={`font-semibold text-sm ${ws.mitigationStatus?.kernel_dropping_enabled ? "text-cyber-green" : "text-cyber-orange"}`}>
+                <p className={`font-semibold text-sm ${ws.mitigationStatus?.kernel_dropping_enabled ? "text-status-success" : "text-cyber-orange"}`}>
                   {ws.mitigationStatus?.kernel_dropping_enabled ? "Active" : "Disabled (fallback)"}
                 </p>
               </div>
             </div>
           </div>
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3">
-              <div className={`p-2 rounded-lg ${
-                ws.mitigationStatus?.sdn_connected === 1 ? "bg-cyber-green/10" :
+              <div className={`p-2 rounded-md ${
+                ws.mitigationStatus?.sdn_connected === 1 ? "bg-status-success/10" :
                 ws.mitigationStatus?.sdn_connected === 0 ? "bg-cyber-red/10" : "bg-muted"
               }`}>
                 <Server className={`w-4 h-4 ${
-                  ws.mitigationStatus?.sdn_connected === 1 ? "text-cyber-green" :
+                  ws.mitigationStatus?.sdn_connected === 1 ? "text-status-success" :
                   ws.mitigationStatus?.sdn_connected === 0 ? "text-cyber-red" : "text-muted-foreground"
                 }`} />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">SDN Controller</p>
                 <p className={`font-semibold text-sm ${
-                  ws.mitigationStatus?.sdn_connected === 1 ? "text-cyber-green" :
+                  ws.mitigationStatus?.sdn_connected === 1 ? "text-status-success" :
                   ws.mitigationStatus?.sdn_connected === 0 ? "text-cyber-red" : "text-muted-foreground"
                 }`}>
                   {ws.mitigationStatus?.sdn_connected === 1 ? "Connected" :

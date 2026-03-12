@@ -28,8 +28,8 @@ export class ErrorBoundary extends Component<Props, State> {
     if (this.state.hasError) {
       return (
         <div className="min-h-screen bg-background flex items-center justify-center p-8">
-          <div className="cyber-card glow-border p-8 rounded-xl max-w-lg text-center space-y-4">
-            <AlertTriangle className="w-12 h-12 text-cyber-red mx-auto" />
+          <div className="cyber-card glow-border p-8 rounded-lg max-w-lg text-center space-y-4">
+            <AlertTriangle className="w-12 h-12 text-status-danger mx-auto" />
             <h1 className="text-xl font-bold">Something went wrong</h1>
             <p className="text-sm text-muted-foreground">
               {this.state.error?.message || "An unexpected error occurred in the dashboard."}

@@ -12,20 +12,17 @@ const statusConfig = {
   normal: {
     label: "Traffic Normal",
     icon: CheckCircle,
-    className: "bg-cyber-green/10 text-cyber-green border-cyber-green/30",
-    glowClass: "shadow-[0_0_20px_hsl(160_84%_45%/0.3)]",
+    className: "bg-status-success/10 text-status-success border-status-success/20",
   },
   observation: {
     label: "Under Observation",
     icon: AlertTriangle,
-    className: "bg-cyber-yellow/10 text-cyber-yellow border-cyber-yellow/30",
-    glowClass: "shadow-[0_0_20px_hsl(45_93%_58%/0.3)]",
+    className: "bg-status-warning/10 text-status-warning border-status-warning/20",
   },
   attack: {
     label: "Attack Detected",
     icon: ShieldAlert,
-    className: "bg-cyber-red/10 text-cyber-red border-cyber-red/30",
-    glowClass: "shadow-[0_0_20px_hsl(0_72%_51%/0.3)]",
+    className: "bg-status-danger/10 text-status-danger border-status-danger/20",
   },
 };
 
@@ -38,7 +35,6 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
       className={cn(
         "inline-flex items-center gap-2 px-4 py-2 rounded-full border font-medium text-sm transition-all",
         config.className,
-        config.glowClass,
         className
       )}
     >
@@ -46,9 +42,9 @@ export function StatusBadge({ status, className }: StatusBadgeProps) {
       <span>{config.label}</span>
       <div className={cn(
         "w-2 h-2 rounded-full ml-1",
-        status === "normal" && "bg-cyber-green animate-pulse-glow",
-        status === "observation" && "bg-cyber-yellow animate-pulse-glow",
-        status === "attack" && "bg-cyber-red animate-pulse-glow"
+        status === "normal" && "bg-status-success pulse-glow",
+        status === "observation" && "bg-status-warning pulse-glow",
+        status === "attack" && "bg-status-danger pulse-glow"
       )} />
     </div>
   );

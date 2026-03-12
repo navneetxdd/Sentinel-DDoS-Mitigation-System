@@ -15,7 +15,7 @@ const protoName = (n: number) => {
 
 export function ActiveConnectionsTable({ className, connections = [] }: ActiveConnectionsTableProps) {
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="mb-4">
         <h3 className="font-semibold">Active Connections</h3>
         <p className="text-xs text-muted-foreground">Top flows by packet count</p>
@@ -34,7 +34,7 @@ export function ActiveConnectionsTable({ className, connections = [] }: ActiveCo
             </thead>
             <tbody>
               {connections.slice(0, 20).map((conn, idx) => (
-                <tr key={idx} className="border-b border-border/50 hover:bg-secondary/30">
+                <tr key={idx} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
                   <td className="py-2 font-mono text-xs">{conn.src}</td>
                   <td className="py-2 font-mono text-xs">{conn.dst}</td>
                   <td className="py-2">{protoName(conn.proto)}</td>

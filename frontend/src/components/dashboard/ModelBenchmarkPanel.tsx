@@ -23,11 +23,11 @@ export function ModelBenchmarkPanel({
   className,
 }: ModelBenchmarkPanelProps) {
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10">
-            <BarChart3 className="w-5 h-5 text-primary" />
+          <div className="p-2 rounded-md bg-secondary">
+            <BarChart3 className="w-5 h-5 text-foreground" />
           </div>
           <div>
             <h3 className="font-semibold">Model Benchmark Comparison</h3>
@@ -50,15 +50,15 @@ export function ModelBenchmarkPanel({
       </div>
 
       {loading ? (
-        <div className="p-4 rounded-lg bg-secondary/40 border border-border text-sm text-muted-foreground">
+        <div className="p-4 rounded-md bg-secondary/40 border border-border text-sm text-muted-foreground">
           Loading latest benchmark artifact...
         </div>
       ) : error ? (
-        <div className="p-4 rounded-lg bg-cyber-red/5 border border-cyber-red/20 text-sm text-muted-foreground">
+        <div className="p-4 rounded-md bg-status-danger/5 border border-status-danger/20 text-sm text-muted-foreground">
           Benchmark artifact could not be loaded: {error}
         </div>
       ) : !report || report.models.length === 0 ? (
-        <div className="p-4 rounded-lg bg-secondary/40 border border-border text-sm text-muted-foreground">
+        <div className="p-4 rounded-md bg-secondary/40 border border-border text-sm text-muted-foreground">
           No benchmark artifact found yet. Run the trainer to generate `model_benchmark_report.json`.
         </div>
       ) : (
@@ -72,7 +72,7 @@ export function ModelBenchmarkPanel({
                 <div
                   key={model.name}
                   className={cn(
-                    "rounded-xl border p-4 bg-secondary/30",
+                    "rounded-md border p-4 bg-secondary/30",
                     model.exported ? "border-primary/30" : "border-border"
                   )}
                 >
@@ -92,7 +92,7 @@ export function ModelBenchmarkPanel({
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
                       <p className="text-xs text-muted-foreground">Test Macro-F1</p>
-                      <p className="font-mono font-bold text-cyber-green">
+                      <p className="font-mono font-bold text-status-success">
                         {formatPercent(model.test_metrics.macro_f1)}
                       </p>
                     </div>
@@ -104,7 +104,7 @@ export function ModelBenchmarkPanel({
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">Worst Family</p>
-                      <p className="font-mono font-bold text-cyber-yellow">
+                      <p className="font-mono font-bold text-status-warning">
                         {formatPercent(model.summary.worst_family_macro_f1)}
                       </p>
                     </div>
@@ -141,7 +141,7 @@ export function ModelBenchmarkPanel({
             })}
           </div>
 
-          <div className="rounded-lg bg-secondary/30 border border-border px-4 py-3 text-xs text-muted-foreground">
+          <div className="rounded-md bg-secondary/30 border border-border px-4 py-3 text-xs text-muted-foreground">
             Runtime model: <span className="font-mono text-foreground/90">{report.runtime_model}</span>
             {" · "}
             Generated: <span className="font-mono text-foreground/90">{new Date(report.generated_at_utc).toLocaleString()}</span>

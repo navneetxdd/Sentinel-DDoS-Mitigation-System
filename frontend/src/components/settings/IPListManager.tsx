@@ -25,9 +25,19 @@ export function IPListManager({
   const [newIP, setNewIP] = useState("");
 
   const isValidIP = (ip: string) => {
-    const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/;
-    const cidrPattern = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
-    return ipv4Pattern.test(ip) || cidrPattern.test(ip);
+    const [addr, prefix] = ip.split("/");
+    const octets = addr.split(".");
+    if (octets.length !== 4) return false;
+    const validOctets = octets.every((octet) => {
+      if (!/^\d+$/.test(octet)) return false;
+      const value = Number(octet);
+      return value >= 0 && value <= 255;
+    });
+    if (!validOctets) return false;
+    if (prefix === undefined) return true;
+    if (!/^\d+$/.test(prefix)) return false;
+    const prefixNum = Number(prefix);
+    return prefixNum >= 0 && prefixNum <= 32;
   };
 
   const handleAdd = () => {
@@ -65,9 +75,9 @@ export function IPListManager({
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         {isWhitelist ? (
-          <Shield className="w-4 h-4 text-cyber-green" />
+          <Shield className="w-4 h-4 text-status-success" />
         ) : (
-          <Ban className="w-4 h-4 text-cyber-red" />
+          <Ban className="w-4 h-4 text-status-danger" />
         )}
         <div>
           <h4 className="font-medium text-sm">{title}</h4>
@@ -91,8 +101,8 @@ export function IPListManager({
           className={cn(
             "shrink-0",
             isWhitelist
-              ? "bg-cyber-green/20 text-cyber-green hover:bg-cyber-green/30 border border-cyber-green/30"
-              : "bg-cyber-red/20 text-cyber-red hover:bg-cyber-red/30 border border-cyber-red/30"
+              ? "bg-status-success/10 text-status-success hover:bg-status-success/15 border border-status-success/20"
+              : "bg-status-danger/10 text-status-danger hover:bg-status-danger/15 border border-status-danger/20"
           )}
         >
           <Plus className="w-4 h-4" />
@@ -109,10 +119,10 @@ export function IPListManager({
             <div
               key={ip}
               className={cn(
-                "flex items-center justify-between px-3 py-2 rounded-lg border",
+                "flex items-center justify-between px-3 py-2 rounded-md border",
                 isWhitelist
-                  ? "bg-cyber-green/5 border-cyber-green/20"
-                  : "bg-cyber-red/5 border-cyber-red/20"
+                  ? "bg-status-success/5 border-status-success/20"
+                  : "bg-status-danger/5 border-status-danger/20"
               )}
             >
               <span className="font-mono text-sm">{ip}</span>

@@ -74,7 +74,7 @@ const DEFAULT_SETTINGS: SettingsState = {
   blacklist: [],
   emailNotifications: false,
   smsNotifications: false,
-  webhookNotifications: true,
+  webhookNotifications: false,
   notifyOnAttack: true,
   notifyOnMitigation: true,
   notifyOnThreshold: false,
@@ -110,6 +110,17 @@ const loadStoredSettings = (): SettingsState => {
 const saveStoredSettings = (settings: SettingsState) => {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+};
+
+const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+const isValidHttpUrl = (value: string) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
 };
 
 const Settings = () => {
@@ -228,6 +239,24 @@ const Settings = () => {
   };
 
   const handleSave = () => {
+    if (emailNotifications && !isValidEmail(emailAddress.trim())) {
+      toast({
+        title: "Invalid email address",
+        description: "Enter a valid email address before enabling email notifications.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (webhookNotifications && !isValidHttpUrl(webhookUrl.trim())) {
+      toast({
+        title: "Invalid webhook URL",
+        description: "Webhook notifications require a valid http:// or https:// URL.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     saveStoredSettings(currentSettings);
 
     if (ws.connected && ws.sendCommand) {
@@ -271,8 +300,8 @@ const Settings = () => {
       <div className="space-y-6 animate-fade-in">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10">
-              <SettingsIcon className="w-6 h-6 text-primary" />
+            <div className="p-2 rounded-md bg-secondary">
+              <SettingsIcon className="w-6 h-6 text-foreground" />
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
@@ -507,7 +536,7 @@ const Settings = () => {
                       type="email"
                       value={emailAddress}
                       onChange={(event) => setEmailAddress(event.target.value)}
-                      placeholder="security@example.com"
+                      placeholder="soc-team@example.com"
                       className="bg-secondary border-border"
                     />
                   </div>
@@ -543,7 +572,7 @@ const Settings = () => {
                       type="url"
                       value={webhookUrl}
                       onChange={(event) => setWebhookUrl(event.target.value)}
-                      placeholder="https://hooks.slack.com/..."
+                      placeholder="https://alerts.example.com/sentinel"
                       className="bg-secondary border-border font-mono text-xs"
                     />
                   </div>

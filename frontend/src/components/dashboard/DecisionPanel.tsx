@@ -42,12 +42,12 @@ export function DecisionPanel({
   const Icon = config.icon;
 
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <h3 className="font-semibold mb-4">Classification Result</h3>
 
       <div className="grid gap-4">
         {/* Attack Probability */}
-        <div className="p-4 rounded-lg bg-secondary/50 border border-border">
+        <div className="p-4 rounded-md bg-secondary/50 border border-border">
           <p className="text-xs text-muted-foreground mb-2">Attack Probability</p>
           <div className="flex items-center gap-3">
             <div className="flex-1 h-3 bg-muted rounded-full overflow-hidden">
@@ -81,12 +81,12 @@ export function DecisionPanel({
         {/* Classification */}
         <div
           className={cn(
-            "p-4 rounded-lg border flex items-center gap-4",
+            "p-4 rounded-md border flex items-center gap-4",
             config.bgColor,
             config.borderColor
           )}
         >
-          <div className={cn("p-3 rounded-lg", config.bgColor)}>
+          <div className={cn("p-3 rounded-md", config.bgColor)}>
             <Icon className={cn("w-6 h-6", config.color)} />
           </div>
           <div>

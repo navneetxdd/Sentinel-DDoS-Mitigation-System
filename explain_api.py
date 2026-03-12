@@ -101,6 +101,9 @@ class ExplainHandler(BaseHTTPRequestHandler):
     _cors_origin: str = "http://localhost:5173"
     _db_path: str = ""
     _db_lock: Lock = Lock()
+    _require_proxy_auth: bool = False
+    _trusted_proxy_ips: set[str] = {"127.0.0.1", "::1"}
+    _login_url: str = "/oauth2/start"
 
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write(f"[explain_api] {args[0]}\n")
@@ -111,6 +114,7 @@ class ExplainHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", ExplainHandler._cors_origin)
+        self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(body)
 
@@ -141,7 +145,12 @@ class ExplainHandler(BaseHTTPRequestHandler):
             loaded = ExplainHandler.model is not None and ExplainHandler._explainer is not None
             self._json_response(200, {"status": "ok", "model_loaded": loaded, "shap_available": shap is not None})
             return
+        if parsed.path == "/session":
+            self._json_response(200, self._build_session_payload())
+            return
         if parsed.path == "/events":
+            if not self._ensure_authenticated_session():
+                return
             self._handle_events_get(parsed)
             return
         self._json_response(404, {"error": "Not found"})
@@ -156,15 +165,22 @@ class ExplainHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == "/analyze":
+            if not self._ensure_authenticated_session():
+                return
             self._handle_analyze()
             return
 
         if parsed.path == "/events":
+            if not self._ensure_authenticated_session():
+                return
             self._handle_events_post()
             return
 
         if parsed.path != "/shap":
             self._json_response(404, {"error": "Not found"})
+            return
+
+        if not self._ensure_authenticated_session():
             return
 
         if ExplainHandler.model is None:
@@ -235,6 +251,80 @@ class ExplainHandler(BaseHTTPRequestHandler):
                 "num_samples": len(samples),
             },
         )
+
+    # ------------------------------------------------------------------
+    # Reverse-proxy auth helpers
+    # ------------------------------------------------------------------
+
+    def _client_ip(self) -> str:
+        return self.client_address[0] if self.client_address else ""
+
+    def _build_session_payload(self) -> Dict[str, Any]:
+        if not ExplainHandler._require_proxy_auth:
+            return {
+                "required": False,
+                "authenticated": True,
+                "mode": "disabled",
+                "user": None,
+                "login_url": None,
+            }
+
+        if self._client_ip() not in ExplainHandler._trusted_proxy_ips:
+            return {
+                "required": True,
+                "authenticated": False,
+                "mode": "proxy-header",
+                "reason": "untrusted-proxy",
+                "user": None,
+                "login_url": ExplainHandler._login_url,
+            }
+
+        username = (
+            self.headers.get("X-Forwarded-User")
+            or self.headers.get("X-Auth-Request-User")
+            or self.headers.get("X-Forwarded-Preferred-Username")
+            or ""
+        ).strip()
+        email = (
+            self.headers.get("X-Forwarded-Email")
+            or self.headers.get("X-Auth-Request-Email")
+            or ""
+        ).strip()
+        groups_raw = (
+            self.headers.get("X-Forwarded-Groups")
+            or self.headers.get("X-Auth-Request-Groups")
+            or ""
+        ).strip()
+
+        if not username and not email:
+            return {
+                "required": True,
+                "authenticated": False,
+                "mode": "proxy-header",
+                "reason": "missing-identity-headers",
+                "user": None,
+                "login_url": ExplainHandler._login_url,
+            }
+
+        groups = [part.strip() for part in groups_raw.split(",") if part.strip()]
+        return {
+            "required": True,
+            "authenticated": True,
+            "mode": "proxy-header",
+            "login_url": ExplainHandler._login_url,
+            "user": {
+                "username": username or email,
+                "email": email or None,
+                "groups": groups,
+            },
+        }
+
+    def _ensure_authenticated_session(self) -> bool:
+        session = self._build_session_payload()
+        if session.get("authenticated"):
+            return True
+        self._json_response(401, session)
+        return False
 
     # ------------------------------------------------------------------
     # SQLite-backed event log
@@ -429,6 +519,11 @@ def main() -> None:
     args = parser.parse_args()
 
     ExplainHandler._cors_origin = args.cors_origin
+    ExplainHandler._require_proxy_auth = os.environ.get("SENTINEL_REQUIRE_PROXY_AUTH", "0") in {"1", "true", "TRUE", "yes", "YES"}
+    ExplainHandler._trusted_proxy_ips = {
+        ip.strip() for ip in os.environ.get("SENTINEL_TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if ip.strip()
+    } or {"127.0.0.1", "::1"}
+    ExplainHandler._login_url = os.environ.get("SENTINEL_PROXY_LOGIN_URL", "/oauth2/start")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = args.model or os.path.join(script_dir, "benchmarks", "sentinel_model.joblib")
@@ -465,6 +560,7 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), ExplainHandler)
     print(f"[*] Explain API listening on http://{args.host}:{args.port}")
     print(f"[*] CORS origin: {args.cors_origin}")
+    print(f"[*] Proxy auth required: {ExplainHandler._require_proxy_auth}")
     print("[*] GET /health  GET /events  POST /shap  POST /analyze  POST /events")
     try:
         server.serve_forever()

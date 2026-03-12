@@ -21,15 +21,15 @@ export function AutoMitigationToggle({
   className,
 }: AutoMitigationToggleProps) {
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <div className={cn(
-            "p-3 rounded-lg transition-colors",
-            isEnabled ? "bg-cyber-green/10" : "bg-secondary"
+            "p-3 rounded-md transition-colors",
+            isEnabled ? "bg-status-success/10" : "bg-secondary"
           )}>
             {isEnabled ? (
-              <ShieldCheck className="w-6 h-6 text-cyber-green" />
+              <ShieldCheck className="w-6 h-6 text-status-success" />
             ) : (
               <ShieldOff className="w-6 h-6 text-muted-foreground" />
             )}
@@ -48,10 +48,10 @@ export function AutoMitigationToggle({
           onClick={onToggle}
           disabled={disabled}
           className={cn(
-            "relative flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-all duration-300",
+            "relative flex items-center gap-2 px-5 py-2.5 rounded-md font-medium text-sm transition-colors border",
             isEnabled
-              ? "bg-cyber-green/20 text-cyber-green border border-cyber-green/40 shadow-[0_0_20px_hsl(160_84%_45%/0.3)]"
-              : "bg-secondary text-foreground hover:bg-secondary/80 border border-border",
+              ? "bg-status-success/10 text-status-success border-status-success/20"
+              : "bg-secondary text-foreground hover:bg-secondary/80 border-border",
             disabled && "opacity-60 cursor-not-allowed hover:bg-secondary"
           )}
         >
@@ -59,7 +59,7 @@ export function AutoMitigationToggle({
           <span>{isEnabled ? "Enabled" : "Disabled"}</span>
           <div className={cn(
             "w-10 h-5 rounded-full p-0.5 transition-colors ml-2",
-            isEnabled ? "bg-cyber-green" : "bg-muted"
+            isEnabled ? "bg-status-success" : "bg-muted"
           )}>
             <div className={cn(
               "w-4 h-4 rounded-full bg-background transition-transform",
@@ -72,24 +72,24 @@ export function AutoMitigationToggle({
       {/* Status Details */}
       <div className="mt-4 grid grid-cols-3 gap-3">
         <div className={cn(
-          "p-3 rounded-lg text-center border",
-          isEnabled ? "bg-cyber-green/5 border-cyber-green/20" : "bg-secondary/50 border-border"
+          "p-3 rounded-md text-center border",
+          isEnabled ? "bg-status-success/5 border-status-success/20" : "bg-secondary/50 border-border"
         )}>
-          <p className="text-2xl font-bold font-mono text-cyber-green">{autoBlocked}</p>
+          <p className="text-2xl font-bold font-mono text-status-success">{autoBlocked}</p>
           <p className="text-xs text-muted-foreground">Auto Blocked</p>
         </div>
         <div className={cn(
-          "p-3 rounded-lg text-center border",
-          isEnabled ? "bg-cyber-yellow/5 border-cyber-yellow/20" : "bg-secondary/50 border-border"
+          "p-3 rounded-md text-center border",
+          isEnabled ? "bg-status-warning/5 border-status-warning/20" : "bg-secondary/50 border-border"
         )}>
-          <p className="text-2xl font-bold font-mono text-cyber-yellow">{rateLimited}</p>
+          <p className="text-2xl font-bold font-mono text-status-warning">{rateLimited}</p>
           <p className="text-xs text-muted-foreground">Rate Limited</p>
         </div>
         <div className={cn(
-          "p-3 rounded-lg text-center border",
-          isEnabled ? "bg-primary/5 border-primary/20" : "bg-secondary/50 border-border"
+          "p-3 rounded-md text-center border",
+          isEnabled ? "bg-secondary border-border" : "bg-secondary/50 border-border"
         )}>
-          <p className="text-2xl font-bold font-mono text-primary">{monitored}</p>
+          <p className="text-2xl font-bold font-mono text-foreground">{monitored}</p>
           <p className="text-xs text-muted-foreground">Monitored</p>
         </div>
       </div>

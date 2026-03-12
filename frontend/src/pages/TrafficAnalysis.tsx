@@ -46,8 +46,8 @@ const TrafficAnalysis = () => {
         {/* Header — same as original */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10">
-              <Activity className="w-6 h-6 text-primary" />
+            <div className="p-2 rounded-md bg-secondary">
+              <Activity className="w-6 h-6 text-foreground" />
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Live Traffic Analysis</h1>
@@ -74,25 +74,25 @@ const TrafficAnalysis = () => {
 
         {/* Live Stats Footer — same layout as original, real data from backend */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="cyber-card p-4 rounded-xl text-center">
-            <p className="text-3xl font-bold font-mono text-primary">
+          <div className="cyber-card p-4 rounded-lg text-center">
+            <p className="text-3xl font-bold font-mono text-foreground">
               {formatPps(pps)}
             </p>
             <p className="text-xs text-muted-foreground mt-1">Packets/sec</p>
           </div>
-          <div className="cyber-card p-4 rounded-xl text-center">
-            <p className="text-3xl font-bold font-mono text-cyber-green">
+          <div className="cyber-card p-4 rounded-lg text-center">
+            <p className="text-3xl font-bold font-mono text-status-success">
               {activeSources.toLocaleString()}
             </p>
             <p className="text-xs text-muted-foreground mt-1">Active IPs</p>
           </div>
-          <div className="cyber-card p-4 rounded-xl text-center">
-            <p className="text-3xl font-bold font-mono text-cyber-yellow">
+          <div className="cyber-card p-4 rounded-lg text-center">
+            <p className="text-3xl font-bold font-mono text-status-warning">
               {activeFlows.toLocaleString()}
             </p>
             <p className="text-xs text-muted-foreground mt-1">Active Flows</p>
           </div>
-          <div className="cyber-card p-4 rounded-xl text-center">
+          <div className="cyber-card p-4 rounded-lg text-center">
             <p className="text-3xl font-bold font-mono text-cyber-purple">
               {formatBandwidth(bps)}
             </p>

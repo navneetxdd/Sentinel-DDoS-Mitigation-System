@@ -11,11 +11,11 @@ interface SettingsCardProps {
 
 export function SettingsCard({ title, description, icon: Icon, children, className }: SettingsCardProps) {
   return (
-    <div className={cn("cyber-card glow-border p-6 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-6 rounded-lg", className)}>
       <div className="flex items-start gap-3 mb-4">
         {Icon && (
-          <div className="p-2 rounded-lg bg-primary/10">
-            <Icon className="w-5 h-5 text-primary" />
+          <div className="p-2 rounded-md bg-secondary">
+            <Icon className="w-5 h-5 text-foreground" />
           </div>
         )}
         <div>

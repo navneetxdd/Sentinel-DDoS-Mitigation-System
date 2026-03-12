@@ -25,9 +25,9 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
       return {
         icon: ShieldAlert,
         title: "DDoS Attack Detected",
-        color: "text-cyber-red",
-        borderColor: "border-cyber-red/30",
-        bgColor: "bg-cyber-red/5",
+        color: "text-status-danger",
+        borderColor: "border-status-danger/20",
+        bgColor: "bg-status-danger/5",
         points: [
           `Live threat score: ${avgScore}`,
           `Detections (last 10s): ${det10s}`,
@@ -44,9 +44,9 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
       return {
         icon: AlertTriangle,
         title: "Flash Crowd Event Detected",
-        color: "text-cyber-yellow",
-        borderColor: "border-cyber-yellow/30",
-        bgColor: "bg-cyber-yellow/5",
+        color: "text-status-warning",
+        borderColor: "border-status-warning/20",
+        bgColor: "bg-status-warning/5",
         points: [
           `Live threat score: ${avgScore}`,
           `Detections (last 10s): ${det10s}`,
@@ -60,9 +60,9 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
     return {
       icon: Info,
       title: "Normal Traffic Pattern",
-      color: "text-cyber-green",
-      borderColor: "border-cyber-green/30",
-      bgColor: "bg-cyber-green/5",
+      color: "text-status-success",
+      borderColor: "border-status-success/20",
+      bgColor: "bg-status-success/5",
       points: [
         `Live threat score: ${avgScore}`,
         `IP entropy weight (configured): ${entW}%`,
@@ -77,7 +77,7 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
   const Icon = explanation.icon;
 
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="flex items-center gap-3 mb-4">
         <div className={cn("p-2 rounded-lg", explanation.bgColor)}>
           <Icon className={cn("w-5 h-5", explanation.color)} />
@@ -86,7 +86,7 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
       </div>
 
       <div className={cn(
-        "p-4 rounded-lg border mb-4",
+        "p-4 rounded-md border mb-4",
         explanation.bgColor,
         explanation.borderColor
       )}>
@@ -101,7 +101,7 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
         </ul>
       </div>
 
-      <div className="p-3 rounded-lg bg-secondary/50 border border-border">
+      <div className="p-3 rounded-md bg-secondary/50 border border-border">
         <p className="text-xs text-muted-foreground mb-1">Recommendation</p>
         <p className="text-sm font-medium">{explanation.recommendation}</p>
       </div>

@@ -36,10 +36,10 @@ const MitigationControl = () => {
   const autoMitigation = ws.mitigationStatus?.auto_mitigation_enabled ?? false;
 
   const stats = [
-    { label: "Blocked IPs", value: ws.mitigationStatus?.total_blocked ?? 0, icon: Ban, color: "text-cyber-red", bgColor: "bg-cyber-red/10" },
+    { label: "Blocked IPs", value: ws.mitigationStatus?.total_blocked ?? 0, icon: Ban, color: "text-status-danger", bgColor: "bg-status-danger/10" },
     { label: "Rate Limited", value: ws.mitigationStatus?.total_rate_limited ?? 0, icon: Gauge, color: "text-cyber-orange", bgColor: "bg-cyber-orange/10" },
-    { label: "Monitored", value: ws.mitigationStatus?.total_monitored ?? 0, icon: Eye, color: "text-cyber-yellow", bgColor: "bg-cyber-yellow/10" },
-    { label: "Whitelisted", value: ws.mitigationStatus?.total_whitelisted ?? 0, icon: CheckCircle, color: "text-cyber-green", bgColor: "bg-cyber-green/10" },
+    { label: "Monitored", value: ws.mitigationStatus?.total_monitored ?? 0, icon: Eye, color: "text-status-warning", bgColor: "bg-status-warning/10" },
+    { label: "Whitelisted", value: ws.mitigationStatus?.total_whitelisted ?? 0, icon: CheckCircle, color: "text-status-success", bgColor: "bg-status-success/10" },
   ];
 
   const kernelDrops = ws.mitigationStatus?.kernel_dropping_enabled ?? false;
@@ -93,8 +93,8 @@ const MitigationControl = () => {
       <div className="space-y-6 animate-fade-in">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10">
-              <Shield className="w-6 h-6 text-primary" />
+            <div className="p-2 rounded-md bg-secondary">
+              <Shield className="w-6 h-6 text-foreground" />
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Mitigation Control</h1>
@@ -103,7 +103,7 @@ const MitigationControl = () => {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary border border-border">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-secondary border border-border">
             <Clock className="w-4 h-4 text-muted-foreground" />
             <span className="text-sm text-muted-foreground">Last action: {lastActionTime}</span>
           </div>
@@ -111,9 +111,9 @@ const MitigationControl = () => {
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {stats.map((stat) => (
-            <div key={stat.label} className="cyber-card glow-border p-4 rounded-xl">
+            <div key={stat.label} className="cyber-card glow-border p-4 rounded-lg">
               <div className="flex items-center gap-3">
-                <div className={cn("p-2 rounded-lg", stat.bgColor)}>
+                <div className={cn("p-2 rounded-md", stat.bgColor)}>
                   <stat.icon className={cn("w-4 h-4", stat.color)} />
                 </div>
                 <div>
@@ -126,43 +126,43 @@ const MitigationControl = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className={cn("cyber-card glow-border p-4 rounded-xl", kernelDrops ? "border-cyber-green/30" : "border-cyber-orange/30")}>
+          <div className={cn("cyber-card glow-border p-4 rounded-lg", kernelDrops ? "border-status-success/20" : "border-cyber-orange/30")}>
             <div className="flex items-center gap-3">
-              <div className={cn("p-2 rounded-lg", kernelDrops ? "bg-cyber-green/10" : "bg-cyber-orange/10")}>
-                <Shield className={cn("w-4 h-4", kernelDrops ? "text-cyber-green" : "text-cyber-orange")} />
+              <div className={cn("p-2 rounded-md", kernelDrops ? "bg-status-success/10" : "bg-cyber-orange/10")}>
+                <Shield className={cn("w-4 h-4", kernelDrops ? "text-status-success" : "text-cyber-orange")} />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Kernel Drops</p>
-                <p className={cn("font-semibold text-sm", kernelDrops ? "text-cyber-green" : "text-cyber-orange")}>
+                <p className={cn("font-semibold text-sm", kernelDrops ? "text-status-success" : "text-cyber-orange")}>
                   {kernelDrops ? "Active" : "Disabled (fallback mode)"}
                 </p>
               </div>
             </div>
           </div>
           <div className={cn(
-            "cyber-card glow-border p-4 rounded-xl",
-            sdnStatus === 1 ? "border-cyber-green/30" : sdnStatus === 0 ? "border-cyber-red/30" : "border-border"
+            "cyber-card glow-border p-4 rounded-lg",
+            sdnStatus === 1 ? "border-status-success/20" : sdnStatus === 0 ? "border-status-danger/20" : "border-border"
           )}>
             <div className="flex items-center gap-3">
               <div className={cn(
-                "p-2 rounded-lg",
-                sdnStatus === 1 ? "bg-cyber-green/10" : sdnStatus === 0 ? "bg-cyber-red/10" : "bg-muted"
+                "p-2 rounded-md",
+                sdnStatus === 1 ? "bg-status-success/10" : sdnStatus === 0 ? "bg-status-danger/10" : "bg-muted"
               )}>
                 <Server className={cn(
                   "w-4 h-4",
-                  sdnStatus === 1 ? "text-cyber-green" : sdnStatus === 0 ? "text-cyber-red" : "text-muted-foreground"
+                  sdnStatus === 1 ? "text-status-success" : sdnStatus === 0 ? "text-status-danger" : "text-muted-foreground"
                 )} />
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs text-muted-foreground">SDN Controller</p>
                 <p className={cn(
                   "font-semibold text-sm",
-                  sdnStatus === 1 ? "text-cyber-green" : sdnStatus === 0 ? "text-cyber-red" : "text-muted-foreground"
+                  sdnStatus === 1 ? "text-status-success" : sdnStatus === 0 ? "text-status-danger" : "text-muted-foreground"
                 )}>
                   {sdnStatus === 1 ? "Connected" : sdnStatus === 0 ? "Unreachable" : "Unknown"}
                 </p>
                 {sdnStatus === 0 && ws.mitigationStatus?.sdn_last_error ? (
-                  <p className="text-xs text-cyber-red/90 mt-1 truncate" title={ws.mitigationStatus.sdn_last_error}>
+                  <p className="text-xs text-status-danger/90 mt-1 truncate" title={ws.mitigationStatus.sdn_last_error}>
                     {ws.mitigationStatus.sdn_last_error}
                   </p>
                 ) : null}
@@ -187,7 +187,7 @@ const MitigationControl = () => {
             {timelineEntries.length > 0 ? (
               <MitigationTimeline entries={timelineEntries} />
             ) : (
-              <div className="cyber-card glow-border p-8 rounded-xl text-center">
+              <div className="cyber-card glow-border p-8 rounded-lg text-center">
                 <Shield className="w-12 h-12 text-muted-foreground mx-auto mb-3 opacity-30" />
                 <p className="text-muted-foreground text-sm">
                   No mitigation actions recorded yet.
@@ -200,33 +200,33 @@ const MitigationControl = () => {
           </div>
 
           <div className="space-y-4">
-            <div className="cyber-card glow-border p-5 rounded-xl">
+            <div className="cyber-card glow-border p-5 rounded-lg">
               <h3 className="font-semibold mb-4">Quick Actions</h3>
               <div className="space-y-3">
                 <button
                   onClick={() => ws.sendCommand("block_all_flagged")}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-cyber-red/10 text-cyber-red border border-cyber-red/20 hover:bg-cyber-red/20 transition-colors"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-status-danger/10 text-status-danger border border-status-danger/20 hover:bg-status-danger/15 transition-colors"
                 >
                   <Ban className="w-4 h-4" />
                   <span className="font-medium text-sm">Block All Flagged IPs</span>
                 </button>
                 <button
                   onClick={() => ws.sendCommand("apply_rate_limit")}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-cyber-orange/10 text-cyber-orange border border-cyber-orange/20 hover:bg-cyber-orange/20 transition-colors"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-cyber-orange/10 text-cyber-orange border border-cyber-orange/20 hover:bg-cyber-orange/15 transition-colors"
                 >
                   <Gauge className="w-4 h-4" />
                   <span className="font-medium text-sm">Apply Global Rate Limit</span>
                 </button>
                 <button
                   onClick={() => ws.sendCommand("enable_monitoring")}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-cyber-yellow/10 text-cyber-yellow border border-cyber-yellow/20 hover:bg-cyber-yellow/20 transition-colors"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-status-warning/10 text-status-warning border border-status-warning/20 hover:bg-status-warning/15 transition-colors"
                 >
                   <Eye className="w-4 h-4" />
                   <span className="font-medium text-sm">Enable Enhanced Monitoring</span>
                 </button>
                 <button
                   onClick={() => ws.sendCommand("clear_all_blocks")}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-cyber-green/10 text-cyber-green border border-cyber-green/20 hover:bg-cyber-green/20 transition-colors"
+                  className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-status-success/10 text-status-success border border-status-success/20 hover:bg-status-success/15 transition-colors"
                 >
                   <CheckCircle className="w-4 h-4" />
                   <span className="font-medium text-sm">Clear All Blocks</span>
@@ -235,11 +235,11 @@ const MitigationControl = () => {
             </div>
 
             {activeThreats > 0 ? (
-              <div className="cyber-card p-5 rounded-xl border border-cyber-yellow/30 bg-cyber-yellow/5">
+              <div className="cyber-card p-5 rounded-lg border border-status-warning/20 bg-status-warning/5">
                 <div className="flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-cyber-yellow flex-shrink-0 mt-0.5" />
+                  <AlertTriangle className="w-5 h-5 text-status-warning flex-shrink-0 mt-0.5" />
                   <div>
-                    <h4 className="font-semibold text-cyber-yellow text-sm mb-1">
+                    <h4 className="font-semibold text-status-warning text-sm mb-1">
                       Active Threat Detected
                     </h4>
                     <p className="text-xs text-muted-foreground mb-3">
@@ -248,7 +248,7 @@ const MitigationControl = () => {
                     <button
                       type="button"
                       onClick={() => timelineRef.current?.scrollIntoView({ behavior: "smooth" })}
-                      className="text-xs font-medium text-cyber-yellow hover:underline"
+                      className="text-xs font-medium text-status-warning hover:underline"
                     >
                       View Details -&gt;
                     </button>
@@ -256,11 +256,11 @@ const MitigationControl = () => {
                 </div>
               </div>
             ) : (
-              <div className="cyber-card p-5 rounded-xl border border-cyber-green/30 bg-cyber-green/5">
+              <div className="cyber-card p-5 rounded-lg border border-status-success/20 bg-status-success/5">
                 <div className="flex items-start gap-3">
-                  <CheckCircle className="w-5 h-5 text-cyber-green flex-shrink-0 mt-0.5" />
+                  <CheckCircle className="w-5 h-5 text-status-success flex-shrink-0 mt-0.5" />
                   <div>
-                    <h4 className="font-semibold text-cyber-green text-sm mb-1">
+                    <h4 className="font-semibold text-status-success text-sm mb-1">
                       All Clear
                     </h4>
                     <p className="text-xs text-muted-foreground">
@@ -277,9 +277,9 @@ const MitigationControl = () => {
 
         {/* Blocked, Rate-Limited, Monitored, Whitelisted IPs — real data from backend */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="cyber-card glow-border p-5 rounded-xl">
+          <div className="cyber-card glow-border p-5 rounded-lg">
             <h3 className="font-semibold mb-4 flex items-center gap-2">
-              <Ban className="w-4 h-4 text-cyber-red" />
+              <Ban className="w-4 h-4 text-status-danger" />
               Blocked IPs
             </h3>
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
@@ -299,7 +299,7 @@ const MitigationControl = () => {
                           <button
                             type="button"
                             onClick={() => ws.sendCommand("unblock_ip", { ip: entry.ip })}
-                            className="text-xs text-cyber-green hover:underline"
+                            className="text-xs text-status-success hover:underline"
                           >
                             Unblock
                           </button>
@@ -314,7 +314,7 @@ const MitigationControl = () => {
             </div>
           </div>
 
-          <div className="cyber-card glow-border p-5 rounded-xl">
+          <div className="cyber-card glow-border p-5 rounded-lg">
             <h3 className="font-semibold mb-4 flex items-center gap-2">
               <Gauge className="w-4 h-4 text-cyber-orange" />
               Rate-Limited IPs
@@ -338,7 +338,7 @@ const MitigationControl = () => {
                           <button
                             type="button"
                             onClick={() => ws.sendCommand("clear_rate_limit", { ip: entry.ip })}
-                            className="text-xs text-cyber-green hover:underline"
+                            className="text-xs text-status-success hover:underline"
                           >
                             Clear
                           </button>
@@ -353,9 +353,9 @@ const MitigationControl = () => {
             </div>
           </div>
 
-          <div className="cyber-card glow-border p-5 rounded-xl">
+          <div className="cyber-card glow-border p-5 rounded-lg">
             <h3 className="font-semibold mb-4 flex items-center gap-2">
-              <Eye className="w-4 h-4 text-cyber-yellow" />
+              <Eye className="w-4 h-4 text-status-warning" />
               Monitored IPs
             </h3>
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
@@ -380,9 +380,9 @@ const MitigationControl = () => {
             </div>
           </div>
 
-          <div className="cyber-card glow-border p-5 rounded-xl">
+          <div className="cyber-card glow-border p-5 rounded-lg">
             <h3 className="font-semibold mb-4 flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 text-cyber-green" />
+              <CheckCircle className="w-4 h-4 text-status-success" />
               Whitelisted IPs
             </h3>
             <div className="overflow-x-auto max-h-48 overflow-y-auto">

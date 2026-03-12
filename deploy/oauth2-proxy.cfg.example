@@ -1,0 +1,19 @@
+provider = "oidc"
+oidc_issuer_url = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+client_id = "<oidc-client-id>"
+client_secret = "<oidc-client-secret>"
+cookie_secret = "<32-byte-base64-secret>"
+
+http_address = "127.0.0.1:4180"
+reverse_proxy = true
+set_xauthrequest = true
+pass_authorization_header = true
+pass_access_token = false
+cookie_secure = true
+cookie_httponly = true
+cookie_samesite = "lax"
+cookie_refresh = "1h"
+cookie_expire = "8h"
+email_domains = [ "*" ]
+upstreams = [ "http://127.0.0.1:8080/" ]
+redirect_url = "https://sentinel.example.com/oauth2/callback"

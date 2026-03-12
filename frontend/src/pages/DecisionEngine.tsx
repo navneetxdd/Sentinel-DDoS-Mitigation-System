@@ -51,12 +51,12 @@ const DecisionEngine = () => {
 
   const aiTelemetry = {
     timestamp: new Date().toISOString(),
-    sourceIp: ws.metrics?.top_sources?.[0] || 'Unknown',
+    sourceIp: ws.topSources?.[0]?.ip ?? "Unknown",
     packetsPerSecond: pps,
-    bytesPerSecond: ws.metrics?.bytes_per_sec || 0,
+    bytesPerSecond: ws.metrics?.bytes_per_sec ?? 0,
     threatScore: threatScore,
     activeFlows: ws.metrics?.active_flows ?? 0,
-    topProtocol: topProtocol
+    topProtocol,
   };
 
   return (
@@ -65,8 +65,8 @@ const DecisionEngine = () => {
         {/* Header — same as original */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10">
-              <Brain className="w-6 h-6 text-primary" />
+            <div className="p-2 rounded-md bg-secondary">
+              <Brain className="w-6 h-6 text-foreground" />
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Decision Engine</h1>
@@ -117,21 +117,21 @@ const DecisionEngine = () => {
 
         {/* Model Stats — same 3-card layout as original, with real data where available */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-lg bg-primary/10">
-                <Cpu className="w-4 h-4 text-primary" />
+              <div className="p-2 rounded-md bg-secondary">
+                <Cpu className="w-4 h-4 text-foreground" />
               </div>
               <h3 className="font-semibold text-sm">Model Performance</h3>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-xs text-muted-foreground">Threat Score</p>
-                <p className="font-mono font-bold text-cyber-green">{threatScore.toFixed(3)}</p>
+                <p className="font-mono font-bold text-status-success">{threatScore.toFixed(3)}</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Detections (10s)</p>
-                <p className="font-mono font-bold text-cyber-green">{detectionsLast10s}</p>
+                <p className="font-mono font-bold text-status-success">{detectionsLast10s}</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Policy Arm</p>
@@ -144,10 +144,10 @@ const DecisionEngine = () => {
             </div>
           </div>
 
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-lg bg-cyber-green/10">
-                <Database className="w-4 h-4 text-cyber-green" />
+              <div className="p-2 rounded-md bg-status-success/10">
+                <Database className="w-4 h-4 text-status-success" />
               </div>
               <h3 className="font-semibold text-sm">Pipeline Stats</h3>
             </div>
@@ -171,21 +171,21 @@ const DecisionEngine = () => {
             </div>
           </div>
 
-          <div className="cyber-card glow-border p-4 rounded-xl">
+          <div className="cyber-card glow-border p-4 rounded-lg">
             <div className="flex items-center gap-3 mb-3">
-              <div className="p-2 rounded-lg bg-cyber-yellow/10">
-                <Network className="w-4 h-4 text-cyber-yellow" />
+              <div className="p-2 rounded-md bg-status-warning/10">
+                <Network className="w-4 h-4 text-status-warning" />
               </div>
               <h3 className="font-semibold text-sm">Inference Stats</h3>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-xs text-muted-foreground">Throughput</p>
-                <p className="font-mono font-bold text-cyber-green">{mlOps > 0 ? `${mlOps.toLocaleString()}/s` : "Idle"}</p>
+                <p className="font-mono font-bold text-status-success">{mlOps > 0 ? `${mlOps.toLocaleString()}/s` : "Idle"}</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">Probability</p>
-                <p className="font-mono font-bold text-cyber-yellow">{attackProbability}%</p>
+                <p className="font-mono font-bold text-status-warning">{attackProbability}%</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">CPU</p>

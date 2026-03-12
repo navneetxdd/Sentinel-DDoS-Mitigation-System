@@ -28,9 +28,9 @@ export function ToggleSetting({
         checked={checked}
         onCheckedChange={onCheckedChange}
         className={cn(
-          checked && variant === "success" && "data-[state=checked]:bg-cyber-green",
-          checked && variant === "warning" && "data-[state=checked]:bg-cyber-yellow",
-          checked && variant === "danger" && "data-[state=checked]:bg-cyber-red"
+          checked && variant === "success" && "data-[state=checked]:bg-status-success",
+          checked && variant === "warning" && "data-[state=checked]:bg-status-warning",
+          checked && variant === "danger" && "data-[state=checked]:bg-status-danger"
         )}
       />
     </div>

@@ -27,10 +27,10 @@ const actionConfig = {
   monitor: {
     icon: Eye,
     label: "Monitor",
-    color: "text-cyber-yellow",
-    bgColor: "bg-cyber-yellow/10",
-    borderColor: "border-cyber-yellow/30",
-    lineColor: "bg-cyber-yellow",
+    color: "text-status-warning",
+    bgColor: "bg-status-warning/10",
+    borderColor: "border-status-warning/20",
+    lineColor: "bg-status-warning",
   },
   rate_limit: {
     icon: Gauge,
@@ -43,22 +43,22 @@ const actionConfig = {
   block: {
     icon: Shield,
     label: "Block",
-    color: "text-cyber-red",
-    bgColor: "bg-cyber-red/10",
-    borderColor: "border-cyber-red/30",
-    lineColor: "bg-cyber-red",
+    color: "text-status-danger",
+    bgColor: "bg-status-danger/10",
+    borderColor: "border-status-danger/20",
+    lineColor: "bg-status-danger",
   },
 };
 
 const statusIcons = {
-  active: { icon: AlertTriangle, color: "text-cyber-yellow" },
-  completed: { icon: CheckCircle, color: "text-cyber-green" },
-  failed: { icon: XCircle, color: "text-cyber-red" },
+  active: { icon: AlertTriangle, color: "text-status-warning" },
+  completed: { icon: CheckCircle, color: "text-status-success" },
+  failed: { icon: XCircle, color: "text-status-danger" },
 };
 
 export function MitigationTimeline({ entries, className }: MitigationTimelineProps) {
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-xl", className)}>
+    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-semibold">Mitigation Log</h3>
@@ -83,7 +83,7 @@ export function MitigationTimeline({ entries, className }: MitigationTimelinePro
 
               {/* Icon */}
               <div className={cn(
-                "relative z-10 p-2 rounded-lg shrink-0",
+                "relative z-10 p-2 rounded-md shrink-0",
                 config.bgColor,
                 "border",
                 config.borderColor
@@ -106,7 +106,7 @@ export function MitigationTimeline({ entries, className }: MitigationTimelinePro
                     </p>
                   </div>
                 </div>
-                <div className="mt-2 p-3 rounded-lg bg-secondary/50 border border-border">
+                <div className="mt-2 p-3 rounded-md bg-secondary/50 border border-border">
                   <p className="text-xs font-mono text-muted-foreground mb-1">
                     Target: {entry.target}
                   </p>
