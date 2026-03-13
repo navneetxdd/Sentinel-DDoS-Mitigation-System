@@ -202,6 +202,18 @@ npm run dev
 | **Classification** | Random Forest | Supervised ML for complex behavioral profiling. |
 | **Explainability** | SHAP | Per-feature contribution analysis for SOC analysts. |
 
+### Runtime Hardening Controls
+
+- Reflection signature table is now runtime-configurable (no recompile needed).
+  - Default file: `configs/reflection_ports.conf`
+  - File override: `SENTINEL_REFLECTION_PORTS_FILE=/path/to/reflection_ports.conf`
+  - Direct override: `SENTINEL_REFLECTION_PORTS="53,123,1900,11211"`
+- Hard-block false-positive guard is enabled in the decision engine.
+  - When source activity is too low for reliable attribution, hard enforcement can be downgraded to rate limiting.
+  - Guard thresholds are controlled in `ml_engine/decision_engine.h` defaults:
+    - `min_src_flows_for_hard_enforcement`
+    - `min_packet_count_for_hard_enforcement`
+
 ---
 
 ## 📂 Project Structure

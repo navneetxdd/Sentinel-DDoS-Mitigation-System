@@ -103,6 +103,10 @@ typedef struct de_thresholds {
     double   ml_reliability_floor;          /* below this, ML cannot drive hard enforcement */
     double   min_confidence_for_enforcement;/* below this, cap to RATE_LIMIT unless heuristics are strong */
     double   min_non_ml_score_for_hard_block; /* non-ML evidence needed for DROP/QUARANTINE */
+
+    /* hard-enforcement safety guard (false-positive reduction) */
+    double   min_src_flows_for_hard_enforcement;   /* below this, prefer RATE_LIMIT over hard block */
+    double   min_packet_count_for_hard_enforcement;/* small samples should not hard-block by default */
 } de_thresholds_t;
 
 #define DE_THRESHOLDS_DEFAULT { \
@@ -139,7 +143,9 @@ typedef struct de_thresholds {
     .ml_max_isolation   = 0.65, \
     .ml_reliability_floor = 0.40, \
     .min_confidence_for_enforcement = 0.50, \
-    .min_non_ml_score_for_hard_block = 0.45 \
+    .min_non_ml_score_for_hard_block = 0.45, \
+    .min_src_flows_for_hard_enforcement = 4.0, \
+    .min_packet_count_for_hard_enforcement = 48.0 \
 }
 
 /* ============================================================================

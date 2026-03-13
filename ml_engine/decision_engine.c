@@ -35,6 +35,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
+#include <errno.h>
 
 #include "decision_engine.h"
 #include "ml_model.h"
@@ -113,9 +114,113 @@ struct de_context {
     uint32_t           entropy_hist_idx;
     uint32_t           entropy_hist_count;
 
+    /* reflection-signature table (runtime configurable). */
+    uint16_t           reflection_ports[64];
+    uint32_t           reflection_port_count;
+
     ip_entry_t **allowlist;
     ip_entry_t **denylist;
 };
+
+static const uint16_t k_default_reflection_ports[] = {
+    17, 19, 53, 123, 137, 161, 389, 500, 1900, 3478, 5353, 11211
+};
+
+static void de_reset_reflection_ports(de_context_t *ctx)
+{
+    if (!ctx) return;
+    ctx->reflection_port_count = 0;
+    uint32_t n = (uint32_t)(sizeof(k_default_reflection_ports) / sizeof(k_default_reflection_ports[0]));
+    if (n > (uint32_t)(sizeof(ctx->reflection_ports) / sizeof(ctx->reflection_ports[0])))
+        n = (uint32_t)(sizeof(ctx->reflection_ports) / sizeof(ctx->reflection_ports[0]));
+    for (uint32_t i = 0; i < n; i++) {
+        ctx->reflection_ports[i] = k_default_reflection_ports[i];
+    }
+    ctx->reflection_port_count = n;
+}
+
+static int de_has_reflection_port(const de_context_t *ctx, uint16_t p)
+{
+    for (uint32_t i = 0; i < ctx->reflection_port_count; i++) {
+        if (ctx->reflection_ports[i] == p) return 1;
+    }
+    return 0;
+}
+
+static int de_add_reflection_port(de_context_t *ctx, uint16_t p)
+{
+    if (!ctx || p == 0) return 0;
+    if (de_has_reflection_port(ctx, p)) return 1;
+    if (ctx->reflection_port_count >= (uint32_t)(sizeof(ctx->reflection_ports) / sizeof(ctx->reflection_ports[0])))
+        return 0;
+    ctx->reflection_ports[ctx->reflection_port_count++] = p;
+    return 1;
+}
+
+static uint32_t de_load_reflection_ports_from_string(de_context_t *ctx, const char *input)
+{
+    if (!ctx || !input || !*input) return 0;
+    char buf[1024];
+    size_t n = strlen(input);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, input, n);
+    buf[n] = '\0';
+
+    uint32_t added = 0;
+    char *saveptr = NULL;
+    char *tok = strtok_r(buf, ",; \t\r\n", &saveptr);
+    while (tok) {
+        errno = 0;
+        char *endp = NULL;
+        long v = strtol(tok, &endp, 10);
+        if (errno == 0 && endp && *endp == '\0' && v > 0 && v <= 65535) {
+            if (de_add_reflection_port(ctx, (uint16_t)v))
+                added++;
+        }
+        tok = strtok_r(NULL, ",; \t\r\n", &saveptr);
+    }
+    return added;
+}
+
+static uint32_t de_load_reflection_ports_from_file(de_context_t *ctx, const char *path)
+{
+    if (!ctx || !path || !*path) return 0;
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+
+    uint32_t added = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        added += de_load_reflection_ports_from_string(ctx, line);
+    }
+    fclose(fp);
+    return added;
+}
+
+static void de_load_reflection_ports(de_context_t *ctx)
+{
+    if (!ctx) return;
+
+    de_reset_reflection_ports(ctx);
+
+    const char *env_ports = getenv("SENTINEL_REFLECTION_PORTS");
+    if (env_ports && *env_ports) {
+        ctx->reflection_port_count = 0;
+        if (de_load_reflection_ports_from_string(ctx, env_ports) > 0)
+            return;
+        de_reset_reflection_ports(ctx);
+    }
+
+    const char *path = getenv("SENTINEL_REFLECTION_PORTS_FILE");
+    if (!path || !*path) path = "configs/reflection_ports.conf";
+
+    de_reset_reflection_ports(ctx);
+    ctx->reflection_port_count = 0;
+    if (de_load_reflection_ports_from_file(ctx, path) == 0)
+        de_reset_reflection_ports(ctx);
+}
 
 /* ============================================================================
  * HASH HELPER
@@ -166,6 +271,10 @@ de_context_t *de_init(const de_thresholds_t *cfg)
         ctx->cfg.min_confidence_for_enforcement = 0.40;
     if (ctx->cfg.min_non_ml_score_for_hard_block < 0.0 || ctx->cfg.min_non_ml_score_for_hard_block > 1.0)
         ctx->cfg.min_non_ml_score_for_hard_block = 0.45;
+    if (ctx->cfg.min_src_flows_for_hard_enforcement < 1.0)
+        ctx->cfg.min_src_flows_for_hard_enforcement = 4.0;
+    if (ctx->cfg.min_packet_count_for_hard_enforcement < 1.0)
+        ctx->cfg.min_packet_count_for_hard_enforcement = 48.0;
 
     ctx->baselines = calloc(BASELINE_BUCKETS, sizeof(baseline_entry_t *));
     ctx->allowlist = calloc(LIST_BUCKETS, sizeof(ip_entry_t *));
@@ -192,6 +301,8 @@ de_context_t *de_init(const de_thresholds_t *cfg)
     for (uint32_t i = 0; i + 1 < MAX_BASELINES; i++)
         ctx->baseline_slab[i].next = &ctx->baseline_slab[i + 1];
     ctx->baseline_slab[MAX_BASELINES - 1].next = NULL;
+
+    de_load_reflection_ports(ctx);
 
     return ctx;
 }
@@ -605,25 +716,10 @@ static double score_chi_square(de_context_t *ctx,
  * MODEL 3: PROTOCOL ANOMALY
  * ============================================================================ */
 
-static int is_reflection_service_port(uint16_t port_host)
+static int is_reflection_service_port(const de_context_t *ctx, uint16_t port_host)
 {
-    switch (port_host) {
-    case 17:    /* QOTD */
-    case 19:    /* Chargen */
-    case 53:    /* DNS */
-    case 123:   /* NTP */
-    case 137:   /* NetBIOS */
-    case 161:   /* SNMP */
-    case 389:   /* CLDAP */
-    case 500:   /* ISAKMP */
-    case 1900:  /* SSDP */
-    case 3478:  /* STUN */
-    case 5353:  /* mDNS */
-    case 11211: /* Memcached */
-        return 1;
-    default:
-        return 0;
-    }
+    if (!ctx) return 0;
+    return de_has_reflection_port(ctx, port_host);
 }
 
 static double score_protocol(de_context_t *ctx,
@@ -663,7 +759,7 @@ static double score_protocol(de_context_t *ctx,
      * elevated packet rate and multi-source behavior indicate reflector abuse. */
     if (f->protocol == 17) {
         uint16_t src_port_host = ntohs(f->src_port);
-        if (is_reflection_service_port(src_port_host) && f->packets_per_second > 100.0) {
+        if (is_reflection_service_port(ctx, src_port_host) && f->packets_per_second > 100.0) {
             double source_spread = clamp01((double)f->unique_src_ports / 16.0);
             score += 0.25 + 0.25 * source_spread;
         }
@@ -1142,13 +1238,21 @@ int de_classify(de_context_t *ctx,
             (strongest_non_ml >= clamp01(ctx->cfg.min_non_ml_score_for_hard_block + 0.15));
         int wants_hard_enforcement =
             (out->verdict == VERDICT_DROP || out->verdict == VERDICT_QUARANTINE);
+        int source_activity_low =
+            ((double)features->src_total_flows < ctx->cfg.min_src_flows_for_hard_enforcement) &&
+            ((double)features->packet_count < ctx->cfg.min_packet_count_for_hard_enforcement);
+        int source_guard_triggered =
+            wants_hard_enforcement &&
+            source_activity_low &&
+            s_chi < 0.80 &&
+            strongest_non_ml < 0.90;
         int should_fail_safe =
             wants_hard_enforcement &&
             !heuristics_strong &&
             (ml_score.reliability < ctx->cfg.ml_reliability_floor ||
              confidence < ctx->cfg.min_confidence_for_enforcement);
 
-        if (should_fail_safe) {
+        if (should_fail_safe || source_guard_triggered) {
             out->verdict = (threat > allow) ? VERDICT_RATE_LIMIT : VERDICT_ALLOW;
             out->rate_limit_pps = (out->verdict == VERDICT_RATE_LIMIT) ? ctx->cfg.default_rate_limit : 0;
             out->quarantine_sec = 0;
