@@ -35,7 +35,7 @@ interface FeatureTooltipProps {
   payload?: Array<{ payload: FeatureChartDatum }>;
 }
 
-/* Heuristic weights: 7 backend weights */
+/* Heuristic weights: backend model weights */
 const FEATURE_META: { key: keyof SentinelFeatureImportance; name: string; color: string }[] = [
   { key: "volume_weight", name: "Volume", color: "hsl(0, 72%, 51%)" },
   { key: "entropy_weight", name: "IP Entropy", color: "hsl(25, 95%, 53%)" },
@@ -44,6 +44,7 @@ const FEATURE_META: { key: keyof SentinelFeatureImportance; name: string; color:
   { key: "ml_weight", name: "ML Score", color: "hsl(190, 100%, 50%)" },
   { key: "l7_weight", name: "Layer 7", color: "hsl(270, 76%, 60%)" },
   { key: "anomaly_weight", name: "Anomaly", color: "hsl(220, 70%, 60%)" },
+  { key: "chi_square_weight", name: "Chi-Square", color: "hsl(340, 82%, 58%)" },
 ];
 
 const SHAP_COLORS = [
@@ -71,7 +72,7 @@ export function FeatureImportanceChart({
   const [showShap, setShowShap] = useState(false);
 
   const hasShap = shapContributions && shapContributions.length > 0;
-  const canRequestShap = featureVector && featureVector.length === 20 && onRequestShap;
+  const canRequestShap = featureVector && (featureVector.length === 20 || featureVector.length === 21) && onRequestShap;
 
   const heuristicFeatures = data
     ? FEATURE_META.map((f) => ({

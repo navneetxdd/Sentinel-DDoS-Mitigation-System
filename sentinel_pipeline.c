@@ -904,9 +904,12 @@ static _Atomic int g_sdn_connected = -1;  /* -1=never probed, 0=last push failed
 
 static sentinel_feature_vector_t g_last_feature_vector;
 static int g_has_last_feature_vector = 0;
+static double g_last_chi_square_score = 0.0;
 
-/* Convert sentinel_feature_vector_t to 20 raw doubles (same order as ml_model.h / SHAP API) */
-static void fv_to_raw_vector(const sentinel_feature_vector_t *f, ws_raw_feature_vector_t *out)
+/* Convert feature state to 21 raw doubles (same order as explain_api.py). */
+static void fv_to_raw_vector(const sentinel_feature_vector_t *f,
+                             double chi_square_score,
+                             ws_raw_feature_vector_t *out)
 {
     out->values[0]  = f->packets_per_second;
     out->values[1]  = f->bytes_per_second;
@@ -928,6 +931,7 @@ static void fv_to_raw_vector(const sentinel_feature_vector_t *f, ws_raw_feature_
     out->values[17] = (double)f->src_total_flows;
     out->values[18] = f->src_packets_per_second;
     out->values[19] = (double)f->dns_query_count;
+    out->values[20] = chi_square_score;
 }
 
 /* Pending clear_rate_limit: main loop processes, cmd handler sets */
@@ -1574,7 +1578,7 @@ int main(int argc, char **argv)
             }
             if (ws && g_has_last_feature_vector) {
                 ws_raw_feature_vector_t raw_vec;
-                fv_to_raw_vector(&g_last_feature_vector, &raw_vec);
+                fv_to_raw_vector(&g_last_feature_vector, g_last_chi_square_score, &raw_vec);
                 ws_update_feature_vector(ws, &raw_vec);
             }
             detections_10s = 0;
@@ -1649,6 +1653,7 @@ int main(int argc, char **argv)
                 if (de_classify(de, &fv, &assessment) == 0) {
                     g_last_feature_vector = fv;
                     g_has_last_feature_vector = 1;
+                    g_last_chi_square_score = assessment.score_chi_square;
                     classifications_this_sec++;
                     threat_sum_10s += assessment.threat_score;
                     threat_count_10s++;
@@ -1760,6 +1765,7 @@ int main(int argc, char **argv)
                     if (de_classify(de, &fv, &assessment) == 0) {
                         g_last_feature_vector = fv;
                         g_has_last_feature_vector = 1;
+                        g_last_chi_square_score = assessment.score_chi_square;
                         classifications_this_sec++;
                         threat_sum_10s += assessment.threat_score;
                         threat_count_10s++;

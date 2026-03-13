@@ -28,6 +28,13 @@ const TrafficAnalysis = () => {
   const activeSources = ws.metrics?.active_sources ?? 0;
   const activeFlows = ws.metrics?.active_flows ?? 0;
   const bps = ws.trafficRate?.total_bps ?? 0;
+  const chiSquareWeight = ws.featureImportance?.chi_square_weight ?? 0;
+  const benchmarkAccuracy = benchmarks.report
+    ? (() => {
+        const model = benchmarks.report.models.find((m) => m.name === benchmarks.report?.runtime_model);
+        return model?.test_metrics?.accuracy ?? null;
+      })()
+    : null;
 
   const formatPps = (value: number): string => {
     if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
@@ -75,7 +82,7 @@ const TrafficAnalysis = () => {
         </div>
 
         {/* Live Stats Footer — same layout as original, real data from backend */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
           <div className="cyber-card p-4 rounded-lg text-center">
             <p className="text-3xl font-bold font-mono text-foreground">
               {formatPps(pps)}
@@ -102,9 +109,15 @@ const TrafficAnalysis = () => {
           </div>
           <div className="cyber-card p-4 rounded-lg text-center">
             <p className="text-3xl font-bold font-mono text-status-success">
-              {benchmarks.report ? `${(benchmarks.report.accuracy * 100).toFixed(1)}%` : "---"}
+              {benchmarkAccuracy !== null ? `${(benchmarkAccuracy * 100).toFixed(1)}%` : "---"}
             </p>
             <p className="text-xs text-muted-foreground mt-1">Model Accuracy</p>
+          </div>
+          <div className="cyber-card p-4 rounded-lg text-center">
+            <p className="text-3xl font-bold font-mono text-status-warning">
+              {(chiSquareWeight * 100).toFixed(0)}%
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">Chi-Square Weight</p>
           </div>
         </div>
       </div>

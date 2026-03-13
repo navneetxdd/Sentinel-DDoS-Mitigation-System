@@ -605,6 +605,27 @@ static double score_chi_square(de_context_t *ctx,
  * MODEL 3: PROTOCOL ANOMALY
  * ============================================================================ */
 
+static int is_reflection_service_port(uint16_t port_host)
+{
+    switch (port_host) {
+    case 17:    /* QOTD */
+    case 19:    /* Chargen */
+    case 53:    /* DNS */
+    case 123:   /* NTP */
+    case 137:   /* NetBIOS */
+    case 161:   /* SNMP */
+    case 389:   /* CLDAP */
+    case 500:   /* ISAKMP */
+    case 1900:  /* SSDP */
+    case 3478:  /* STUN */
+    case 5353:  /* mDNS */
+    case 11211: /* Memcached */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static double score_protocol(de_context_t *ctx,
                              const sentinel_feature_vector_t *f)
 {
@@ -635,6 +656,17 @@ static double score_protocol(de_context_t *ctx,
     /* ICMP flood (guard division: thresh enforced > 0 in de_init). */
     if (f->protocol == 1 && ctx->cfg.icmp_pps_thresh > 0 && f->packets_per_second > ctx->cfg.icmp_pps_thresh) {
         score += clamp01(f->packets_per_second / (ctx->cfg.icmp_pps_thresh * 3.0));
+    }
+
+    /* Generic reflection/amplification detector:
+     * UDP packets sourced from well-known amplification service ports with
+     * elevated packet rate and multi-source behavior indicate reflector abuse. */
+    if (f->protocol == 17) {
+        uint16_t src_port_host = ntohs(f->src_port);
+        if (is_reflection_service_port(src_port_host) && f->packets_per_second > 100.0) {
+            double source_spread = clamp01((double)f->unique_src_ports / 16.0);
+            score += 0.25 + 0.25 * source_spread;
+        }
     }
 
     /* DNS amplification: UDP port 53, large response sizes */

@@ -656,11 +656,11 @@ flush_phase:
                     ws_raw_feature_vector_t *v = &raw_msg.data.feature_vector;
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"type\":\"feature_vector\",\"data\":[%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
-                        "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f]}",
+                        "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f]}",
                         v->values[0], v->values[1], v->values[2], v->values[3], v->values[4],
                         v->values[5], v->values[6], v->values[7], v->values[8], v->values[9],
                         v->values[10], v->values[11], v->values[12], v->values[13], v->values[14],
-                        v->values[15], v->values[16], v->values[17], v->values[18], v->values[19]);
+                        v->values[15], v->values[16], v->values[17], v->values[18], v->values[19], v->values[20]);
                     break;
                 }
                 case WS_MSG_TYPE_CONNECTIONS: {

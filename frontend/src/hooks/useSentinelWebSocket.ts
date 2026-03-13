@@ -88,6 +88,7 @@ export interface SentinelFeatureImportance {
   ml_weight: number;
   l7_weight: number;
   anomaly_weight: number;
+  chi_square_weight?: number;
   avg_threat_score: number;
   detections_last_10s: number;
   policy_arm: number;
@@ -357,7 +358,7 @@ export function useSentinelWebSocket(): SentinelState {
 
   const requestShapContributions = useCallback(async () => {
     const fv = featureVector ?? [];
-    if (fv.length !== 20) {
+    if (fv.length !== 20 && fv.length !== 21) {
       setShapError("No feature vector available. Wait for traffic and try again.");
       return;
     }
