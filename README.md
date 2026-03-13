@@ -19,6 +19,8 @@ This README is the canonical all-in-one operational guide. New users should be a
 - [Runtime Commands](#runtime-commands)
 - [Kali-Specific Setup Notes](#kali-specific-setup-notes)
 - [Runtime Configuration](#runtime-configuration)
+- [Attack Simulation Playbook](#attack-simulation-playbook)
+- [WebSocket Streams](#websocket-streams)
 - [Verification Checklist](#verification-checklist)
 - [Benchmarks and Integration Tests](#benchmarks-and-integration-tests)
 - [Troubleshooting](#troubleshooting)
@@ -27,7 +29,6 @@ This README is the canonical all-in-one operational guide. New users should be a
 ## Documentation Policy
 
 - This README is the primary entry point.
-- Any extra files in `docs/` are optional deep-dive references, not required for first-time setup.
 - When guidance conflicts, README should be treated as authoritative and updated first.
 
 ## What Sentinel Does
@@ -80,7 +81,6 @@ flowchart LR
 | `proxy/` | XDP and TC eBPF programs |
 | `frontend/` | React + Vite SOC dashboard |
 | `scripts/` | Startup, controller, TC attach, and integration helpers |
-| `docs/` | Focused guides for SDN, telemetry, and deployment details |
 | `configs/` | Runtime configuration files such as reflection ports |
 
 ## Supported Environments
@@ -470,6 +470,57 @@ cd frontend
 export VITE_EXPLAIN_API_URL=http://127.0.0.1:5001
 npm run dev
 ```
+
+## Attack Simulation Playbook
+
+Run these only in environments you own or are explicitly authorized to test.
+
+Prerequisites:
+
+- backend running with telemetry enabled, for example: `sudo ./sentinel_pipeline -i lo -q 0 -w 8765`
+- frontend running on `http://localhost:5173`
+
+SYN flood quick test:
+
+```bash
+sudo hping3 -S -p 80 --flood <TARGET_IP>
+```
+
+UDP flood quick test:
+
+```bash
+sudo hping3 --udp -p 53 --flood <TARGET_IP>
+```
+
+ICMP flood quick test:
+
+```bash
+ping -f <TARGET_IP>
+```
+
+Expected UI behavior:
+
+- traffic and risk indicators spike
+- top source tables show the attacking source
+- mitigation logs show attack type/protocol/threat score
+- blocked or rate-limited tables update when mitigation is enabled
+
+## WebSocket Streams
+
+When the backend runs with `-w 8765`, telemetry streams include:
+
+- `metrics`
+- `activity_logs`
+- `blocked_ips`
+- `rate_limited_ips`
+- `monitored_ips`
+- `whitelisted_ips`
+- `traffic_rate`
+- `protocol_distribution`
+- `top_sources`
+- `feature_importance`
+- `active_connections`
+- `mitigation_status`
 
 ## Verification Checklist
 
