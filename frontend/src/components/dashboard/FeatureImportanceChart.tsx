@@ -45,6 +45,7 @@ const FEATURE_META: { key: keyof SentinelFeatureImportance; name: string; color:
   { key: "l7_weight", name: "Layer 7", color: "hsl(270, 76%, 60%)" },
   { key: "anomaly_weight", name: "Anomaly", color: "hsl(220, 70%, 60%)" },
   { key: "chi_square_weight", name: "Chi-Square", color: "hsl(340, 82%, 58%)" },
+  { key: "fanin_weight", name: "Fan-In", color: "hsl(120, 70%, 42%)" },
 ];
 
 const SHAP_COLORS = [
@@ -72,7 +73,7 @@ export function FeatureImportanceChart({
   const [showShap, setShowShap] = useState(false);
 
   const hasShap = shapContributions && shapContributions.length > 0;
-  const canRequestShap = featureVector && (featureVector.length === 20 || featureVector.length === 21) && onRequestShap;
+  const canRequestShap = featureVector && (featureVector.length === 20 || featureVector.length === 21 || featureVector.length === 22) && onRequestShap;
 
   const heuristicFeatures = data
     ? FEATURE_META.map((f) => ({

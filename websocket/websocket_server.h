@@ -118,7 +118,7 @@ typedef struct ws_top_source {
 
 /* Stream 10a: Raw 20-feature vector (for SHAP explain API) */
 typedef struct ws_raw_feature_vector {
-    double values[21];  /* Order: packets_per_second, bytes_per_second, syn_ratio, ..., chi_square_score */
+    double values[22];  /* Order: packets_per_second, bytes_per_second, syn_ratio, ..., chi_square_score, unique_src_ips_to_dst */
 } ws_raw_feature_vector_t;
 
 /* Stream 10: Feature Importance */
@@ -131,7 +131,9 @@ typedef struct ws_feature_importance {
     double l7_weight;
     double anomaly_weight;
     double chi_square_weight;
+    double fanin_weight;
     double avg_threat_score;
+    double avg_fanin_score;
     uint32_t detections_last_10s;
     uint32_t policy_arm;
     uint64_t policy_updates;

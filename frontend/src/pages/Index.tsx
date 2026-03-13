@@ -29,7 +29,9 @@ const Index = () => {
   const pps = ws.metrics?.packets_per_sec ?? 0;
   const flows = ws.metrics?.active_flows ?? 0;
   const threatScore = ws.featureImportance?.avg_threat_score ?? 0;
+  const faninScore = ws.featureImportance?.avg_fanin_score ?? 0;
   const riskScore = Math.min(100, Math.round(threatScore * 100));
+  const distributedEvidence = Math.min(100, Math.round(faninScore * 100));
   const totalBlocked = ws.mitigationStatus?.total_blocked ?? 0;
   const totalRateLimited = ws.mitigationStatus?.total_rate_limited ?? 0;
   const mitigationActive = totalBlocked > 0 || totalRateLimited > 0;
@@ -163,6 +165,13 @@ const Index = () => {
               unit={mlOps > 0 ? "ops/s" : ""}
               icon={<Server className="w-5 h-5" />}
               variant={mlOps > 0 ? "success" : "default"}
+            />
+            <StatCard
+              label="Distributed Threat Evidence"
+              value={`${distributedEvidence}%`}
+              unit={distributedEvidence >= 70 ? "high fan-in" : distributedEvidence >= 30 ? "watching" : "low"}
+              icon={<Layers className="w-5 h-5" />}
+              variant={distributedEvidence >= 70 ? "danger" : distributedEvidence >= 30 ? "warning" : "success"}
             />
             <StatCard
               label="CPU Usage"

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { createContext, createElement, useContext, useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import { fetchExplainApi, isExplainApiConfigured, WS_URL_CANDIDATES } from "@/lib/apiConfig";
 
 /* ============================================================================
@@ -89,7 +89,9 @@ export interface SentinelFeatureImportance {
   l7_weight: number;
   anomaly_weight: number;
   chi_square_weight?: number;
+  fanin_weight?: number;
   avg_threat_score: number;
+  avg_fanin_score?: number;
   detections_last_10s: number;
   policy_arm: number;
   policy_updates: number;
@@ -160,7 +162,7 @@ export interface SentinelState {
 const MAX_ACTIVITY_LOG = 100;
 const MAX_TRAFFIC_HISTORY = 60;
 
-export function useSentinelWebSocket(): SentinelState {
+function useSentinelWebSocketState(): SentinelState {
   const [connected, setConnected] = useState(false);
   const [metrics, setMetrics] = useState<SentinelMetrics | null>(null);
   const [activityLog, setActivityLog] = useState<SentinelActivity[]>([]);
@@ -358,7 +360,7 @@ export function useSentinelWebSocket(): SentinelState {
 
   const requestShapContributions = useCallback(async () => {
     const fv = featureVector ?? [];
-    if (fv.length !== 20 && fv.length !== 21) {
+    if (fv.length !== 20 && fv.length !== 21 && fv.length !== 22) {
       setShapError("No feature vector available. Wait for traffic and try again.");
       return;
     }
@@ -371,10 +373,11 @@ export function useSentinelWebSocket(): SentinelState {
     setShapLoading(true);
     setShapError(null);
     try {
+      const shapVector = fv.length > 21 ? fv.slice(0, 21) : fv;
       const res = await fetchExplainApi("/shap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ samples: [fv] }),
+        body: JSON.stringify({ samples: [shapVector] }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -415,4 +418,23 @@ export function useSentinelWebSocket(): SentinelState {
     sendCommand,
     requestShapContributions,
   };
+}
+
+const SentinelWebSocketContext = createContext<SentinelState | null>(null);
+
+interface SentinelWebSocketProviderProps {
+  children: ReactNode;
+}
+
+export function SentinelWebSocketProvider({ children }: SentinelWebSocketProviderProps) {
+  const state = useSentinelWebSocketState();
+  return createElement(SentinelWebSocketContext.Provider, { value: state }, children);
+}
+
+export function useSentinelWebSocket(): SentinelState {
+  const state = useContext(SentinelWebSocketContext);
+  if (!state) {
+    throw new Error("useSentinelWebSocket must be used within SentinelWebSocketProvider");
+  }
+  return state;
 }

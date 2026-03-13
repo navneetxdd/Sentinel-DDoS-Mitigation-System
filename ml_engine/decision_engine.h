@@ -88,9 +88,11 @@ typedef struct de_thresholds {
     double   weight_l7;
     double   weight_anomaly;
     double   weight_chi_square;   /* chi-square concentration model weight */
+    double   weight_fanin;        /* distributed-source fan-in model weight */
 
     /* chi-square thresholds */
     double   chi_square_thresh;   /* normalization divisor for chi stat (default 50.0) */
+    double   fanin_distributed_thresh; /* unique src count where distributed fan-in saturates */
 
     /* online anomaly configuration */
     double   anomaly_smoothing;
@@ -135,7 +137,9 @@ typedef struct de_thresholds {
     .weight_l7          = 0.10, \
     .weight_anomaly     = 0.05, \
     .weight_chi_square  = 0.05, \
+    .weight_fanin       = 0.08, \
     .chi_square_thresh  = 50.0, \
+    .fanin_distributed_thresh = 16.0, \
     .anomaly_smoothing  = 0.02, \
     .anomaly_sigma      = 3.5,  \
     .anomaly_warmup     = 64,   \

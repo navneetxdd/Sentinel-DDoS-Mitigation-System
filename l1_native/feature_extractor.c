@@ -132,6 +132,23 @@ typedef struct source_entry {
 } __attribute__((aligned(64))) source_entry_t;
 
 /* ============================================================================
+ * PER-DESTINATION FAN-IN STATE
+ * Tracks distinct source IPs targeting each destination via a 256-bit sketch.
+ * ============================================================================ */
+
+#define DST_SOURCE_BITS  256u
+#define DST_SOURCE_WORDS (DST_SOURCE_BITS / 64u)
+
+typedef struct dst_entry {
+    uint32_t dst_ip;
+    uint64_t src_sketch[DST_SOURCE_WORDS];
+    uint32_t unique_src_estimate;
+    uint64_t first_seen_ns;
+    uint64_t last_seen_ns;
+    struct dst_entry *next;
+} __attribute__((aligned(64))) dst_entry_t;
+
+/* ============================================================================
  * CONTEXT
  * ============================================================================ */
 
@@ -163,6 +180,14 @@ struct fe_context {
     source_entry_t  *src_free_head;  /* recycled sources (anti-spoofing: never leak pool) */
     uint32_t         src_count;
     uint32_t         src_bucket_count;
+
+    /* destination fan-in hash table (tracks # unique source IPs per destination) */
+    dst_entry_t **dst_buckets;
+    dst_entry_t  *dst_pool;
+    uint32_t      dst_pool_next;
+    uint32_t      dst_count;
+    uint32_t      dst_bucket_count;
+    uint32_t      dst_pool_cap;
 
     /* last-ingested tracking (zero-lookup path: no hash/memcmp in should_extract/mark_extracted) */
     sentinel_flow_key_t last_key;
@@ -299,6 +324,19 @@ fe_context_t *fe_init(const fe_config_t *cfg)
     ctx->src_free_head = NULL;  /* recycled source list; calloc zeros it but explicit for pool-reset safety */
     ctx->entropy_gen = 1; /* start from 1 so 0-initialized sparse map is 'empty' */
 
+    /* destination fan-in table: pool is max_flows/8, buckets = max_flows/16 (destinations are far fewer than flows) */
+    ctx->dst_bucket_count = ctx->cfg.max_flows / 16;
+    if (ctx->dst_bucket_count < 64) ctx->dst_bucket_count = 64;
+    ctx->dst_buckets = calloc(ctx->dst_bucket_count, sizeof(dst_entry_t *));
+    if (!ctx->dst_buckets) { free(ctx->src_pool); free(ctx->ring_slab); free(ctx->src_buckets); free(ctx->dirty_buckets); free(ctx->flow_pool); free(ctx->flow_slots); free(ctx); return NULL; }
+
+    uint32_t dst_pool_size = ctx->cfg.max_flows / 8;
+    if (dst_pool_size < 128) dst_pool_size = 128;
+    ctx->dst_pool = calloc(dst_pool_size, sizeof(dst_entry_t));
+    if (!ctx->dst_pool) { free(ctx->dst_buckets); free(ctx->src_pool); free(ctx->ring_slab); free(ctx->src_buckets); free(ctx->dirty_buckets); free(ctx->flow_pool); free(ctx->flow_slots); free(ctx); return NULL; }
+    ctx->dst_pool_cap = dst_pool_size;
+    ctx->dst_count = 0;
+
     return ctx;
 }
 
@@ -310,6 +348,8 @@ void fe_destroy(fe_context_t *ctx)
     free(ctx->flow_pool);
     free(ctx->dirty_buckets);
     free(ctx->flow_slots);
+    free(ctx->dst_pool);
+    free(ctx->dst_buckets);
     free(ctx->src_pool);
     free(ctx->src_buckets);
     free(ctx);
@@ -328,7 +368,7 @@ static void fe_force_evict_weakest(fe_context_t *ctx)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 
-    uint32_t start = (uint32_t)(rand() % (int)ctx->flow_slots_cap);
+    uint32_t start = (ctx->flow_slots_cap > 0) ? (ctx->flow_pool_next % ctx->flow_slots_cap) : 0;
     flow_entry_t *weakest = NULL;
     uint32_t weakest_slot_idx = 0;
     double lowest_priority = 1e18;
@@ -369,7 +409,7 @@ static void fe_force_evict_weakest(fe_context_t *ctx)
 
 static void fe_force_evict_source(fe_context_t *ctx)
 {
-    uint32_t start = (uint32_t)(rand() % (int)ctx->src_bucket_count);
+    uint32_t start = (ctx->src_bucket_count > 0) ? (ctx->src_pool_next % ctx->src_bucket_count) : 0;
     source_entry_t *weakest = NULL;
     source_entry_t **weakest_ptr = NULL;
     uint64_t min_packets = 0xFFFFFFFFFFFFFFFFULL;
@@ -640,6 +680,39 @@ static source_entry_t *find_source(fe_context_t *ctx, uint32_t src_ip)
     return NULL;
 }
 
+static dst_entry_t *find_or_create_dst(fe_context_t *ctx, uint32_t dst_ip)
+{
+    uint32_t bucket = hash_u32(dst_ip, 0xFFFFFFFF) % ctx->dst_bucket_count;
+    dst_entry_t *dst = ctx->dst_buckets[bucket];
+
+    while (dst) {
+        if (dst->dst_ip == dst_ip) return dst;
+        dst = dst->next;
+    }
+
+    if (ctx->dst_pool_next >= ctx->dst_pool_cap)
+        return NULL;
+
+    dst = &ctx->dst_pool[ctx->dst_pool_next++];
+    memset(dst, 0, sizeof(*dst));
+    dst->dst_ip = dst_ip;
+    dst->next = ctx->dst_buckets[bucket];
+    ctx->dst_buckets[bucket] = dst;
+    ctx->dst_count++;
+    return dst;
+}
+
+static dst_entry_t *find_dst(fe_context_t *ctx, uint32_t dst_ip)
+{
+    uint32_t bucket = hash_u32(dst_ip, 0xFFFFFFFF) % ctx->dst_bucket_count;
+    dst_entry_t *dst = ctx->dst_buckets[bucket];
+    while (dst) {
+        if (dst->dst_ip == dst_ip) return dst;
+        dst = dst->next;
+    }
+    return NULL;
+}
+
 /* Unlink flow from its source's list (O(1) with prev). Call before evicting. */
 static void unlink_flow_from_source(fe_context_t *ctx, flow_entry_t *f)
 {
@@ -719,6 +792,22 @@ int fe_ingest_packet(fe_context_t *ctx, const fe_packet_t *pkt)
         src->total_bytes += pkt->payload_len;
         if (is_new_src) src->first_seen_ns = pkt->timestamp_ns;
         src->last_seen_ns = pkt->timestamp_ns;
+    }
+
+    {
+        dst_entry_t *dst = find_or_create_dst(ctx, pkt->dst_ip);
+        if (dst) {
+            uint32_t bit_index = hash_u32(pkt->src_ip, DST_SOURCE_BITS);
+            uint32_t word_index = bit_index / 64u;
+            uint64_t bit_mask = 1ULL << (bit_index % 64u);
+            if ((dst->src_sketch[word_index] & bit_mask) == 0) {
+                dst->src_sketch[word_index] |= bit_mask;
+                dst->unique_src_estimate++;
+            }
+            if (dst->first_seen_ns == 0)
+                dst->first_seen_ns = pkt->timestamp_ns;
+            dst->last_seen_ns = pkt->timestamp_ns;
+        }
     }
 
     /* initialise window start */
@@ -1048,6 +1137,11 @@ int fe_extract_flow(fe_context_t *ctx,
     /* diversity */
     out->unique_src_ports = f->unique_src_ports;
     out->unique_dst_ports = f->unique_dst_ports;
+    {
+        dst_entry_t *dst = find_dst(ctx, key->dst_ip);
+        if (dst)
+            out->unique_src_ips_to_dst = dst->unique_src_estimate;
+    }
 
     /* IAT features */
     if (iat_count > 0) {

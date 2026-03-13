@@ -906,7 +906,8 @@ static sentinel_feature_vector_t g_last_feature_vector;
 static int g_has_last_feature_vector = 0;
 static double g_last_chi_square_score = 0.0;
 
-/* Convert feature state to 21 raw doubles (same order as explain_api.py). */
+/* Convert feature state to 22 raw doubles: the explain API consumes the first 21, and
+ * the UI uses the final value as destination-scoped fan-in evidence. */
 static void fv_to_raw_vector(const sentinel_feature_vector_t *f,
                              double chi_square_score,
                              ws_raw_feature_vector_t *out)
@@ -932,6 +933,7 @@ static void fv_to_raw_vector(const sentinel_feature_vector_t *f,
     out->values[18] = f->src_packets_per_second;
     out->values[19] = (double)f->dns_query_count;
     out->values[20] = chi_square_score;
+    out->values[21] = (double)f->unique_src_ips_to_dst;
 }
 
 /* Pending clear_rate_limit: main loop processes, cmd handler sets */
@@ -1282,6 +1284,7 @@ int main(int argc, char **argv)
     uint32_t total_blocked = 0, total_rate_limited = 0, total_monitored = 0;
     uint32_t detections_10s = 0;
     double threat_sum_10s = 0.0;
+    double fanin_sum_10s = 0.0;
     uint32_t threat_count_10s = 0;
 
     activity_raw_t activity_ring[ACTIVITY_RING_SIZE];
@@ -1567,8 +1570,12 @@ int main(int argc, char **argv)
                 wi.l7_weight = dt->weight_l7;
                 wi.anomaly_weight = dt->weight_anomaly;
                 wi.chi_square_weight = dt->weight_chi_square;
+                wi.fanin_weight = dt->weight_fanin;
                 wi.avg_threat_score = (threat_count_10s > 0)
                     ? (threat_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_fanin_score = (threat_count_10s > 0)
+                    ? (fanin_sum_10s / (double)threat_count_10s)
                     : 0.0;
                 wi.detections_last_10s = detections_10s;
                 wi.policy_arm = ps.active_arm;
@@ -1583,6 +1590,7 @@ int main(int argc, char **argv)
             }
             detections_10s = 0;
             threat_sum_10s = 0.0;
+            fanin_sum_10s = 0.0;
             threat_count_10s = 0;
             last_feature_importance = now;
         }
@@ -1656,6 +1664,7 @@ int main(int argc, char **argv)
                     g_last_chi_square_score = assessment.score_chi_square;
                     classifications_this_sec++;
                     threat_sum_10s += assessment.threat_score;
+                    fanin_sum_10s += assessment.score_fanin;
                     threat_count_10s++;
                     if (assessment.verdict != VERDICT_ALLOW) {
                         detections_10s++;
@@ -1768,6 +1777,7 @@ int main(int argc, char **argv)
                         g_last_chi_square_score = assessment.score_chi_square;
                         classifications_this_sec++;
                         threat_sum_10s += assessment.threat_score;
+                        fanin_sum_10s += assessment.score_fanin;
                         threat_count_10s++;
                         if (assessment.verdict != VERDICT_ALLOW) {
                             detections_10s++;

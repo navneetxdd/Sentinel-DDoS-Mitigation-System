@@ -94,7 +94,7 @@ typedef struct sentinel_feature_vector {
     /* --- diversity features --- */
     uint32_t unique_src_ports;      /* distinct source ports seen */
     uint32_t unique_dst_ports;      /* distinct dest ports seen */
-    uint32_t unique_src_ips;        /* per aggregate (src_ip=0 wildcard) */
+    uint32_t unique_src_ips_to_dst; /* distinct source IPs targeting this flow's dst_ip (fan-in tracker) */
 
     /* --- TTL features --- */
     double   avg_ttl;
@@ -176,6 +176,7 @@ typedef struct sentinel_threat_assessment {
     double   score_l7;              /* layer-7/asymmetry component */
     double   score_anomaly;         /* online anomaly component */
     double   score_chi_square;      /* chi-square source-concentration component */
+    double   score_fanin;           /* distributed fan-in concentration score [0,1] */
     double   ml_reliability;        /* how much the runtime trusted the ML score */
 
     /* --- timing --- */

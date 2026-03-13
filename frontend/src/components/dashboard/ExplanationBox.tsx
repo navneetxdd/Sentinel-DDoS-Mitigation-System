@@ -19,6 +19,8 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
     const behW = fi ? (fi.behavioral_weight * 100).toFixed(0) : "—";
     const mlW = fi ? (fi.ml_weight * 100).toFixed(0) : "—";
     const protoW = fi ? (fi.protocol_weight * 100).toFixed(0) : "—";
+    const faninW = fi ? ((fi.fanin_weight ?? 0) * 100).toFixed(0) : "—";
+    const faninScore = fi ? (fi.avg_fanin_score ?? 0).toFixed(3) : "—";
     const det10s = fi ? fi.detections_last_10s : "—";
 
     if (isAttack) {
@@ -33,6 +35,8 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
           `Detections (last 10s): ${det10s}`,
           `Volume weight (configured): ${volW}%`,
           `IP entropy weight (configured): ${entW}%`,
+          `Fan-in score (live): ${faninScore}`,
+          `Fan-in weight (configured): ${faninW}%`,
           `ML weight (configured): ${mlW}%`,
           `Behavioral weight (configured): ${behW}%`,
         ],
@@ -66,6 +70,7 @@ export function ExplanationBox({ isAttack, isFlashCrowd, featureImportance, clas
       points: [
         `Live threat score: ${avgScore}`,
         `IP entropy weight (configured): ${entW}%`,
+        `Fan-in score (live): ${faninScore}`,
         `Protocol weight (configured): ${protoW}%`,
         `ML weight (configured): ${mlW}%`,
       ],

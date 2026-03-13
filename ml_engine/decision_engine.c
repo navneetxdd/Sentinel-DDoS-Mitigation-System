@@ -712,6 +712,22 @@ static double score_chi_square(de_context_t *ctx,
     return clamp01(chi / ctx->cfg.chi_square_thresh);
 }
 
+static double score_fanin_concentration(de_context_t *ctx,
+                                        const sentinel_feature_vector_t *f)
+{
+    uint32_t fanin = f->unique_src_ips_to_dst;
+
+    if (fanin == 0 || ctx->cfg.fanin_distributed_thresh <= 0.0)
+        return 0.0;
+
+    double score = clamp01((double)fanin / ctx->cfg.fanin_distributed_thresh);
+
+    if ((double)fanin >= ctx->cfg.fanin_distributed_thresh && f->packets_per_second > 200.0)
+        score = clamp01(score + 0.3);
+
+    return score;
+}
+
 /* ============================================================================
  * MODEL 3: PROTOCOL ANOMALY
  * ============================================================================ */
@@ -978,7 +994,8 @@ static sentinel_attack_type_t classify_attack(const sentinel_feature_vector_t *f
                                               double s_vol, double s_ent,
                                               double s_proto, double s_behav,
                                               double s_ml, double s_l7,
-                                              double s_anom)
+                                              double s_anom,
+                                              double s_fanin)
 {
     (void)s_ent;  /* entropy score not used directly for type classification */
     (void)s_ml;   /* ML flags anomalies broadly */
@@ -986,6 +1003,13 @@ static sentinel_attack_type_t classify_attack(const sentinel_feature_vector_t *f
     /* Layer 7 Application Flood */
     if (s_l7 > 0.6 && f->protocol == 6)
         return SENTINEL_ATTACK_UNKNOWN; /* Typically indicates an L7 GET/POST flood */
+
+    /* Smurf: ICMP flood targeting broadcast addresses. */
+    if (f->protocol == 1) {
+        uint32_t dst_host = ntohl(f->dst_ip);
+        if (dst_host == 0xFFFFFFFFu || (dst_host & 0xFFu) == 0xFFu)
+            return SENTINEL_ATTACK_SMURF;
+    }
 
     /* LAND attack */
     if (f->src_ip == f->dst_ip && f->src_ip != 0)
@@ -1015,6 +1039,10 @@ static sentinel_attack_type_t classify_attack(const sentinel_feature_vector_t *f
     /* ICMP flood */
     if (f->protocol == 1 && s_vol > 0.5)
         return SENTINEL_ATTACK_ICMP_FLOOD;
+
+    /* Distributed multi-source flood signal. */
+    if (s_fanin > 0.6)
+        return SENTINEL_ATTACK_UNKNOWN;
 
     /* Port scan */
     if (f->unique_dst_ports > 50 && s_behav > 0.3)
@@ -1054,6 +1082,7 @@ int de_classify(de_context_t *ctx,
         out->score_ml     = 0.0;
         out->score_l7     = 0.0;
         out->score_anomaly = 0.0;
+        out->score_fanin   = 0.0;
         out->ml_reliability = 0.0;
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -1070,6 +1099,7 @@ int de_classify(de_context_t *ctx,
         out->score_ml      = 1.0;
         out->score_l7      = 0.0;
         out->score_anomaly = 0.0;
+        out->score_fanin   = 0.0;
         out->ml_reliability = 0.0;
         out->quarantine_sec = ctx->cfg.default_quarantine;
         struct timespec ts;
@@ -1090,15 +1120,17 @@ int de_classify(de_context_t *ctx,
     double s_l7    = score_l7_asymmetry(ctx, features);
     /* Chi-square concentration model: detects single-source traffic dominance. */
     double s_chi   = score_chi_square(ctx, features);
+    double s_fanin = score_fanin_concentration(ctx, features);
     double pre_ml_threat = ctx->cfg.weight_volume      * s_vol
                          + ctx->cfg.weight_entropy     * s_ent
                          + ctx->cfg.weight_protocol    * s_proto
                          + ctx->cfg.weight_behavioral  * s_behav
                          + ctx->cfg.weight_l7          * s_l7
-                         + ctx->cfg.weight_chi_square  * s_chi;
+                         + ctx->cfg.weight_chi_square  * s_chi
+                         + ctx->cfg.weight_fanin       * s_fanin;
     double pre_ml_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                            ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
-                           ctx->cfg.weight_l7 + ctx->cfg.weight_chi_square;
+                           ctx->cfg.weight_l7 + ctx->cfg.weight_chi_square + ctx->cfg.weight_fanin;
     if (pre_ml_weight > 0.0) pre_ml_threat /= pre_ml_weight;
     pre_ml_threat = clamp01(pre_ml_threat);
 
@@ -1117,10 +1149,12 @@ int de_classify(de_context_t *ctx,
                        + ctx->cfg.weight_behavioral  * s_behav
                        + ctx->cfg.weight_ml          * ml_score.effective_score
                        + ctx->cfg.weight_l7          * s_l7
-                       + ctx->cfg.weight_chi_square  * s_chi;
+                                             + ctx->cfg.weight_chi_square  * s_chi
+                                             + ctx->cfg.weight_fanin       * s_fanin;
     double core_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                          ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
-                         ctx->cfg.weight_ml + ctx->cfg.weight_l7 + ctx->cfg.weight_chi_square;
+                                                 ctx->cfg.weight_ml + ctx->cfg.weight_l7 + ctx->cfg.weight_chi_square +
+                                                 ctx->cfg.weight_fanin;
     if (core_weight > 0.0) core_threat /= core_weight;
     core_threat = clamp01(core_threat);
 
@@ -1141,10 +1175,12 @@ int de_classify(de_context_t *ctx,
                          + ctx->cfg.weight_behavioral  * s_behav
                          + ctx->cfg.weight_l7          * s_l7
                          + ctx->cfg.weight_anomaly     * s_anom
-                         + ctx->cfg.weight_chi_square  * s_chi;
+                                                 + ctx->cfg.weight_chi_square  * s_chi
+                                                 + ctx->cfg.weight_fanin       * s_fanin;
     double non_ml_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                            ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
-                           ctx->cfg.weight_l7 + ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square;
+                                                     ctx->cfg.weight_l7 + ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square +
+                                                     ctx->cfg.weight_fanin;
     if (non_ml_weight > 0.0) non_ml_threat /= non_ml_weight;
     non_ml_threat = clamp01(non_ml_threat);
 
@@ -1162,13 +1198,14 @@ int de_classify(de_context_t *ctx,
                   + ctx->cfg.weight_ml          * ml_score.effective_score
                   + ctx->cfg.weight_l7          * s_l7
                   + ctx->cfg.weight_anomaly     * s_anom
-                  + ctx->cfg.weight_chi_square  * s_chi;
+                  + ctx->cfg.weight_chi_square  * s_chi
+                  + ctx->cfg.weight_fanin       * s_fanin;
 
     /* Absolute Reckoning Fix: Global Weight Normalization */
     double total_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                          ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
                          ctx->cfg.weight_ml + ctx->cfg.weight_l7 +
-                         ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square;
+                         ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square + ctx->cfg.weight_fanin;
     if (total_weight > 0.0) threat /= total_weight;
 
     threat = clamp01(threat);
@@ -1176,11 +1213,11 @@ int de_classify(de_context_t *ctx,
     /* confidence: higher when more observations and scores agree */
     double agreement = 1.0;
     {
-        double scores[8] = { s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom, s_chi };
-        double mean = (s_vol + s_ent + s_proto + s_behav + ml_score.effective_score + s_l7 + s_anom + s_chi) / 8.0;
+        double scores[9] = { s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom, s_chi, s_fanin };
+        double mean = (s_vol + s_ent + s_proto + s_behav + ml_score.effective_score + s_l7 + s_anom + s_chi + s_fanin) / 9.0;
         double var = 0;
-        for (int i = 0; i < 8; i++) var += (scores[i] - mean) * (scores[i] - mean);
-        var /= 8.0;
+        for (int i = 0; i < 9; i++) var += (scores[i] - mean) * (scores[i] - mean);
+        var /= 9.0;
         /* low variance -> high agreement -> high confidence */
         agreement = 1.0 - clamp01(sqrt(var));
     }
@@ -1195,6 +1232,7 @@ int de_classify(de_context_t *ctx,
     out->score_l7          = s_l7;
     out->score_anomaly     = s_anom;
     out->score_chi_square  = s_chi;
+    out->score_fanin       = s_fanin;
     out->ml_reliability    = ml_score.reliability;
     out->threat_score     = threat;
     out->confidence       = confidence;
@@ -1206,7 +1244,7 @@ int de_classify(de_context_t *ctx,
 
     /* classify attack type */
     if (threat > allow) {
-        out->attack_type = classify_attack(features, s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom);
+        out->attack_type = classify_attack(features, s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom, s_fanin);
     } else {
         out->attack_type = SENTINEL_ATTACK_NONE;
     }
@@ -1232,13 +1270,16 @@ int de_classify(de_context_t *ctx,
         if (s_l7 > strongest_non_ml) strongest_non_ml = s_l7;
         if (s_anom > strongest_non_ml) strongest_non_ml = s_anom;
         if (s_chi > strongest_non_ml) strongest_non_ml = s_chi;
+        if (s_fanin > strongest_non_ml) strongest_non_ml = s_fanin;
 
         int heuristics_strong =
             (non_ml_threat >= ctx->cfg.min_non_ml_score_for_hard_block) ||
             (strongest_non_ml >= clamp01(ctx->cfg.min_non_ml_score_for_hard_block + 0.15));
         int wants_hard_enforcement =
             (out->verdict == VERDICT_DROP || out->verdict == VERDICT_QUARANTINE);
+        int distributed_ddos_evidence = (features->unique_src_ips_to_dst > 4);
         int source_activity_low =
+            !distributed_ddos_evidence &&
             ((double)features->src_total_flows < ctx->cfg.min_src_flows_for_hard_enforcement) &&
             ((double)features->packet_count < ctx->cfg.min_packet_count_for_hard_enforcement);
         int source_guard_triggered =

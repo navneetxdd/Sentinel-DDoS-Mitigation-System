@@ -643,12 +643,12 @@ flush_phase:
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"type\":\"feature_importance\",\"data\":{"
                         "\"volume_weight\":%.3f,\"entropy_weight\":%.3f,\"protocol_weight\":%.3f,\"behavioral_weight\":%.3f,"
-                        "\"ml_weight\":%.3f,\"l7_weight\":%.3f,\"anomaly_weight\":%.3f,\"chi_square_weight\":%.3f,"
-                        "\"avg_threat_score\":%.3f,\"detections_last_10s\":%u,"
+                        "\"ml_weight\":%.3f,\"l7_weight\":%.3f,\"anomaly_weight\":%.3f,\"chi_square_weight\":%.3f,\"fanin_weight\":%.3f,"
+                        "\"avg_threat_score\":%.3f,\"avg_fanin_score\":%.3f,\"detections_last_10s\":%u,"
                         "\"policy_arm\":%u,\"policy_updates\":%lu,\"policy_last_reward\":%.3f}}",
                         f->volume_weight, f->entropy_weight, f->protocol_weight, f->behavioral_weight,
-                        f->ml_weight, f->l7_weight, f->anomaly_weight, f->chi_square_weight,
-                        f->avg_threat_score, f->detections_last_10s,
+                        f->ml_weight, f->l7_weight, f->anomaly_weight, f->chi_square_weight, f->fanin_weight,
+                        f->avg_threat_score, f->avg_fanin_score, f->detections_last_10s,
                         f->policy_arm, (unsigned long)f->policy_updates, f->policy_last_reward);
                     break;
                 }
@@ -656,11 +656,12 @@ flush_phase:
                     ws_raw_feature_vector_t *v = &raw_msg.data.feature_vector;
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"type\":\"feature_vector\",\"data\":[%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
-                        "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f]}",
+                        "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f]}",
                         v->values[0], v->values[1], v->values[2], v->values[3], v->values[4],
                         v->values[5], v->values[6], v->values[7], v->values[8], v->values[9],
                         v->values[10], v->values[11], v->values[12], v->values[13], v->values[14],
-                        v->values[15], v->values[16], v->values[17], v->values[18], v->values[19], v->values[20]);
+                        v->values[15], v->values[16], v->values[17], v->values[18], v->values[19], v->values[20],
+                        v->values[21]);
                     break;
                 }
                 case WS_MSG_TYPE_CONNECTIONS: {
