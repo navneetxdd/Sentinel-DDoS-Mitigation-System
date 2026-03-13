@@ -1,39 +1,52 @@
 @echo off
+setlocal
+
 title Sentinel Launch Manager
 color 0A
+
+if not defined SENTINEL_WSL_DISTRO set "SENTINEL_WSL_DISTRO=kali-linux"
+
+for /f "delims=" %%i in ('wsl -d %SENTINEL_WSL_DISTRO% -u root -e wslpath "%~dp0."') do set "WSL_REPO=%%i"
+if not defined WSL_REPO (
+	echo [FAIL] Unable to resolve the repository path inside WSL.
+	echo        Check that the %SENTINEL_WSL_DISTRO% distro is installed and running.
+	goto :end
+)
+
 echo ========================================================
-2: title Sentinel Launch Manager
-3: color 0A
-4: echo ========================================================
-5: echo   Sentinel DDoS Mitigation System - One-Click Launcher
-6: echo ========================================================
-7: echo.
-8: 
-9: echo [1/4] Verifying and Compiling C Backend Pipeline in WSL...
-10: wsl -d kali-linux -u root -e bash -c "cd /mnt/c/Users/navne/Downloads/Sentinel-main && make pipeline"
-11: 
-12: echo.
-13: echo [2/4] Launching C Backend Data Plane...
-14: start cmd /k "title Sentinel C Backend && wsl -d kali-linux -u root -e bash -c 'cd /mnt/c/Users/navne/Downloads/Sentinel-main && sudo ./sentinel_pipeline -i lo -q 0 -w 8765'"
-15: 
-16: echo.
-17: echo [3/4] Launching SHAP Explain API (Python)...
-18: start cmd /k "title Sentinel Explain API && python explain_api.py --port 5001"
-19: 
-20: echo.
-21: echo [4/4] Launching React Frontend Web UI...
-22: start cmd /k "title Sentinel Frontend && cd frontend && npm run dev"
-23: 
-24: echo.
-25: echo ========================================================
-26: echo All subsystems launched!
-27: echo ========================================================
-28: echo.
-29: echo Use THIS terminal window to launch Mininet or run tests.
-30: echo.
-31: echo Quick Commands:
-32: echo   Start SDN Controller: wsl -d kali-linux -u root -e bash -c "cd /mnt/c/Users/navne/Downloads/Sentinel-main && python3 scripts/start_ryu.py"
-33: echo   Open WSL Shell:       wsl -d kali-linux -u root
-34: echo.
-35: cmd /k
-36: 
+echo   Sentinel DDoS Mitigation System - One-Click Launcher
+echo ========================================================
+echo Repo path in WSL: %WSL_REPO%
+echo.
+
+echo [1/5] Verifying and compiling the backend pipeline in WSL...
+wsl -d %SENTINEL_WSL_DISTRO% -u root -e bash -lc "cd '%WSL_REPO%' && make pipeline"
+if errorlevel 1 goto :end
+
+echo.
+echo [2/5] Launching SDN controller...
+start cmd /k "title Sentinel SDN Controller && wsl -d %SENTINEL_WSL_DISTRO% -u root -e bash -lc 'cd ''%WSL_REPO%'' && python3 scripts/start_ryu.py'"
+
+echo.
+echo [3/5] Launching C backend data plane...
+start cmd /k "title Sentinel C Backend && wsl -d %SENTINEL_WSL_DISTRO% -u root -e bash -lc 'cd ''%WSL_REPO%'' && sudo ./sentinel_pipeline -i lo -q 0 -w 8765 --controller http://127.0.0.1:8080'"
+
+echo.
+echo [4/5] Launching SHAP Explain API...
+start cmd /k "title Sentinel Explain API && if exist .venv\Scripts\python.exe (.venv\Scripts\python.exe explain_api.py --port 5001) else (python explain_api.py --port 5001)"
+
+echo.
+echo [5/5] Launching React frontend...
+start cmd /k "title Sentinel Frontend && cd frontend && if not exist node_modules npm install && npm run dev"
+
+echo.
+echo ========================================================
+echo All subsystems launched.
+echo ========================================================
+echo Quick commands:
+echo   Start SDN Controller: wsl -d %SENTINEL_WSL_DISTRO% -u root -e bash -lc "cd '%WSL_REPO%' && python3 scripts/start_ryu.py"
+echo   Open WSL Shell:       wsl -d %SENTINEL_WSL_DISTRO% -u root
+echo.
+
+:end
+cmd /k

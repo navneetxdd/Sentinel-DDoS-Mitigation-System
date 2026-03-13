@@ -3,7 +3,7 @@
 # Test Ryu integration with Sentinel pipeline
 #
 # Prerequisites:
-#   - Controller running with ofctl_rest (python3 start_ryu.py)
+#   - Controller running with ofctl_rest (python3 scripts/start_ryu.py)
 #   - Mininet topology with OpenFlow 1.3 switch
 #
 

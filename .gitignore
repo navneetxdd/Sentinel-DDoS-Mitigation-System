@@ -5,6 +5,7 @@ build/
 .vscode/
 .venv-controller/
 .venv/
+.venv-1/
 *.joblib
 node_modules/
 *.o
@@ -22,3 +23,4 @@ benchmarks/results/
 .env
 .env.local
 .env.*.local
+sentinel_events.db

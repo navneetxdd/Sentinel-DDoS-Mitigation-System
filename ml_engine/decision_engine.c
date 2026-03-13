@@ -159,25 +159,26 @@ static int de_add_reflection_port(de_context_t *ctx, uint16_t p)
 
 static uint32_t de_load_reflection_ports_from_string(de_context_t *ctx, const char *input)
 {
-    if (!ctx || !input || !*input) return 0;
     char buf[1024];
-    size_t n = strlen(input);
-    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-    memcpy(buf, input, n);
-    buf[n] = '\0';
+    uint32_t added;
+    char *tok;
+    char *endp;
+    long v;
 
-    uint32_t added = 0;
-    char *saveptr = NULL;
-    char *tok = strtok_r(buf, ",; \t\r\n", &saveptr);
+    if (!ctx || !input || !*input) return 0;
+    (void)snprintf(buf, sizeof(buf), "%s", input);
+    added = 0;
+
+    tok = strtok(buf, ",; \t\r\n");
     while (tok) {
         errno = 0;
-        char *endp = NULL;
-        long v = strtol(tok, &endp, 10);
+        endp = NULL;
+        v = strtol(tok, &endp, 10);
         if (errno == 0 && endp && *endp == '\0' && v > 0 && v <= 65535) {
             if (de_add_reflection_port(ctx, (uint16_t)v))
                 added++;
         }
-        tok = strtok_r(NULL, ",; \t\r\n", &saveptr);
+        tok = strtok(NULL, ",; \t\r\n");
     }
     return added;
 }

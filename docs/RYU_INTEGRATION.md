@@ -23,7 +23,7 @@ Run these commands from `Sentinel_DDOS_Core/`.
 ### 1. Start controller
 
 ```bash
-python3 start_ryu.py
+python3 scripts/start_ryu.py
 ```
 
 Expected behavior:

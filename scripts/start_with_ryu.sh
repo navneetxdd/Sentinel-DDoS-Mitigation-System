@@ -20,7 +20,7 @@ echo "=== Starting Sentinel DDoS Core ==="
 echo "[1] Checking controller availability..."
 if ! curl -sf http://127.0.0.1:8080/stats/switches > /dev/null 2>&1; then
     echo "[FAIL] Controller not reachable. Start it with:"
-    echo "  python3 start_ryu.py"
+    echo "  python3 scripts/start_ryu.py"
     exit 1
 fi
 echo "[OK] Controller is running"

@@ -47,7 +47,7 @@ echo "[1/6] Building project"
 make -C "$ROOT_DIR" -j4 >/dev/null
 
 echo "[2/6] Starting controller"
-python3 "$ROOT_DIR/start_ryu.py" >"$RESULTS_DIR/ryu.log" 2>&1 &
+python3 "$ROOT_DIR/scripts/start_ryu.py" >"$RESULTS_DIR/ryu.log" 2>&1 &
 RYU_PID=$!
 
 for _ in {1..20}; do
@@ -69,7 +69,7 @@ BASELINE_DROP="$(grep -oE '[0-9]+% dropped' "$RESULTS_DIR/baseline_pingall.log" 
 
 echo "[4/6] Flow operation benchmark during active topology"
 cat >"$RESULTS_DIR/post.cli" <<EOF
-sh "$ROOT_DIR/test_ryu_integration.sh" >/tmp/benchmark_ryu_test.out 2>/tmp/benchmark_ryu_test.err
+sh "$ROOT_DIR/scripts/test_ryu_integration.sh" >/tmp/benchmark_ryu_test.out 2>/tmp/benchmark_ryu_test.err
 EOF
 
 mn --topo single,3 \
