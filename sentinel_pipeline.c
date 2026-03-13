@@ -1562,6 +1562,7 @@ int main(int argc, char **argv)
                 wi.ml_weight = dt->weight_ml;
                 wi.l7_weight = dt->weight_l7;
                 wi.anomaly_weight = dt->weight_anomaly;
+                wi.chi_square_weight = dt->weight_chi_square;
                 wi.avg_threat_score = (threat_count_10s > 0)
                     ? (threat_sum_10s / (double)threat_count_10s)
                     : 0.0;

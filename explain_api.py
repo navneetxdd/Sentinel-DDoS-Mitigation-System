@@ -9,8 +9,8 @@ Usage:
   python explain_api.py [--port 5001] [--cors-origin http://localhost:5173]
 
 Endpoints:
-  POST /shap
-    Body: {"samples": [[f1, f2, ..., f20], ...]}  # raw 20-feature vectors
+    POST /shap
+        Body: {"samples": [[f1, f2, ..., f21], ...]}  # raw 21-feature vectors
     Returns: {"contributions": [[{name, value}, ...], ...], "base_value": float}
 
   POST /analyze
@@ -48,7 +48,7 @@ try:
 except ImportError:
     shap = None
 
-NUM_FEATURES = 20
+NUM_FEATURES = 21
 FEATURE_NAMES = [
     "packets_per_second",
     "bytes_per_second",
@@ -70,6 +70,7 @@ FEATURE_NAMES = [
     "src_total_flows",
     "src_packets_per_second",
     "dns_query_count",
+    "chi_square_score",
 ]
 
 # NOTE: These scaling constants MUST match the MinMax ranges used in train_ml.py.
@@ -79,6 +80,7 @@ ML_MINMAX_HIGH = np.array(
     [
         1e6, 1e9, 1.0, 1.0, 8.0, 8.0, 65535.0, 1500.0, 1000.0, 100.0,
         1.0, 8.0, 65535.0, 64.0, 16.0, 1e6, 1e6, 10000.0, 1e6, 1000.0,
+        1.0,
     ],
     dtype=np.float64,
 )
@@ -202,7 +204,7 @@ class ExplainHandler(BaseHTTPRequestHandler):
 
         samples = body.get("samples")
         if not isinstance(samples, list) or len(samples) == 0:
-            self._json_response(400, {"error": "Expected non-empty 'samples' array of 20-feature vectors"})
+            self._json_response(400, {"error": "Expected non-empty 'samples' array of 21-feature vectors"})
             return
 
         # Cap to 512 samples per request — prevents CPU/memory DoS via SHAP.
@@ -215,10 +217,21 @@ class ExplainHandler(BaseHTTPRequestHandler):
             return
 
         X = np.asarray(samples, dtype=np.float64)
-        if X.ndim != 2 or X.shape[1] != NUM_FEATURES:
+        if X.ndim != 2:
             self._json_response(
                 400,
                 {"error": f"Each sample must have {NUM_FEATURES} features", "got": X.shape},
+            )
+            return
+
+        # Backward compatibility: accept legacy 20-feature vectors and append
+        # chi_square_score=0.0 when upstream telemetry has not been upgraded yet.
+        if X.shape[1] == NUM_FEATURES - 1:
+            X = np.pad(X, ((0, 0), (0, 1)), mode="constant", constant_values=0.0)
+        elif X.shape[1] != NUM_FEATURES:
+            self._json_response(
+                400,
+                {"error": f"Each sample must have {NUM_FEATURES} features (or legacy {NUM_FEATURES - 1})", "got": X.shape},
             )
             return
 

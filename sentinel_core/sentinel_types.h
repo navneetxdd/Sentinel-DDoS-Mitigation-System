@@ -175,6 +175,7 @@ typedef struct sentinel_threat_assessment {
     double   score_ml;              /* raw ML component before reliability gating */
     double   score_l7;              /* layer-7/asymmetry component */
     double   score_anomaly;         /* online anomaly component */
+    double   score_chi_square;      /* chi-square source-concentration component */
     double   ml_reliability;        /* how much the runtime trusted the ML score */
 
     /* --- timing --- */

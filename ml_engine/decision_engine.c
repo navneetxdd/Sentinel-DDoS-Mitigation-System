@@ -67,10 +67,11 @@ typedef struct baseline_entry {
     uint32_t src_ip;
     /* EWMA of packets_per_second */
     double   ewma_pps;
-    double   ewma_pps_var;   /* running variance for sigma */
+    double   ewma_pps_mmd;   /* EWMA Mean Absolute Deviation (robust sigma) */
+    double   prev_pps;       /* previous PPS sample for rate-of-change detection */
     /* EWMA of bytes_per_second */
     double   ewma_bps;
-    double   ewma_bps_var;
+    double   ewma_bps_mmd;
     uint32_t observations_pps;
     uint32_t observations_bps;
     struct baseline_entry *next;
@@ -101,6 +102,16 @@ struct de_context {
     double             anom_ewma[ANOM_FEATURES];
     double             anom_var[ANOM_FEATURES];
     uint32_t           anom_obs[ANOM_FEATURES];
+
+    /* global PPS baseline for chi-square concentration model */
+    double             global_pps_ewma;
+    double             global_pps_mmd;
+    uint32_t           global_pps_obs;
+
+    /* dynamic entropy threshold: circular buffer of recent src_port_entropy values */
+    double             entropy_history[10];
+    uint32_t           entropy_hist_idx;
+    uint32_t           entropy_hist_count;
 
     ip_entry_t **allowlist;
     ip_entry_t **denylist;
@@ -141,6 +152,8 @@ de_context_t *de_init(const de_thresholds_t *cfg)
         ctx->cfg.anomaly_smoothing = 0.05;
     if (ctx->cfg.anomaly_sigma <= 0.0)
         ctx->cfg.anomaly_sigma = 2.5;
+    if (ctx->cfg.chi_square_thresh <= 0.0)
+        ctx->cfg.chi_square_thresh = 50.0;
     if (ctx->cfg.anomaly_warmup < 8)
         ctx->cfg.anomaly_warmup = 8;
     if (ctx->cfg.anomaly_learn_max_threat < 0.0 || ctx->cfg.anomaly_learn_max_threat > 1.0)
@@ -420,14 +433,17 @@ static double ewma_update_and_score(double value,
     double prev = *ewma;
     *ewma = smoothing * value + (1.0 - smoothing) * prev;
     double diff = value - prev;
-    *ewma_var = (1.0 - smoothing) * (*ewma_var) + smoothing * diff * diff;
+    /* EWMMD: Exponential Weighted Mean Absolute Deviation — more robust than variance
+     * against spoofed-traffic that inflates squared-deviation baselines.
+     * Scale factor 1.4826 converts MAD to Gaussian-equivalent sigma. */
+    *ewma_var = (1.0 - smoothing) * (*ewma_var) + smoothing * fabs(diff);
     (*obs)++;
 
     /* Clamp outputs so NaN/Inf cannot propagate. */
     if (isnan(*ewma) || isinf(*ewma)) *ewma = 0.0;
     if (isnan(*ewma_var) || isinf(*ewma_var) || *ewma_var < 0.0) *ewma_var = 0.0;
 
-    double sigma = sqrt(*ewma_var);
+    double sigma = (*ewma_var) * 1.4826;   /* MAD -> Gaussian sigma equivalent */
     if (sigma < 1e-9) return 0.0;
     double z = fabs(value - *ewma) / sigma;
     return (isnan(z) || isinf(z)) ? 0.0 : z;
@@ -462,10 +478,10 @@ static double score_volume(de_context_t *ctx,
                            baseline_entry_t *bl)
 {
     double z_pps = ewma_update_and_score(f->packets_per_second,
-                                          &bl->ewma_pps, &bl->ewma_pps_var,
+                                          &bl->ewma_pps, &bl->ewma_pps_mmd,
                                           &bl->observations_pps, ctx->cfg.ewma_smoothing);
     double z_bps = ewma_update_and_score(f->bytes_per_second,
-                                          &bl->ewma_bps, &bl->ewma_bps_var,
+                                          &bl->ewma_bps, &bl->ewma_bps_mmd,
                                           &bl->observations_bps, ctx->cfg.ewma_smoothing);
 
     /* Non-linear mapping: z/sigma -> [0,1] via logistic (deviation not linear) */
@@ -473,12 +489,26 @@ static double score_volume(de_context_t *ctx,
     double s_pps = z_to_score(z_pps / sigma);
     double s_bps = z_to_score(z_bps / sigma);
 
-    /* take the max as the volume score */
-    return (s_pps > s_bps) ? s_pps : s_bps;
+    /* Rate-of-change (derivative) feature: sudden PPS onset detection.
+     * Inspired by GAR-Project SVM using ICMP derivative as a feature.
+     * A sudden spike from the previous sample is a strong flood indicator
+     * even when the EWMA baseline hasn't fully risen yet. */
+    double s_roc = 0.0;
+    if (bl->observations_pps > 1 && bl->prev_pps >= 0.0) {
+        double delta = fabs(f->packets_per_second - bl->prev_pps);
+        /* Normalize: delta larger than 5x the current EWMA is very suspicious. */
+        double ref = (bl->ewma_pps > 1.0) ? bl->ewma_pps : 1.0;
+        s_roc = clamp01(delta / (ref * 5.0));
+    }
+    bl->prev_pps = f->packets_per_second;
+
+    /* Combine: EWMA-based score dominates; rate-of-change boosts it on sudden onset. */
+    double s_ewma_max = (s_pps > s_bps) ? s_pps : s_bps;
+    return clamp01(s_ewma_max + s_roc * 0.35);
 }
 
 /* ============================================================================
- * MODEL 2: ENTROPY ANOMALY
+ * MODEL 2: ENTROPY ANOMALY (with dynamic threshold adaptation)
  * ============================================================================ */
 
 static double score_entropy(de_context_t *ctx,
@@ -486,12 +516,29 @@ static double score_entropy(de_context_t *ctx,
 {
     double score = 0.0;
 
+    /* Dynamic entropy low threshold: adapts to recent network entropy observations.
+     * Inspired by ksananth4424 DynamicThreshold — when the network's baseline entropy
+     * is consistently low (e.g., enterprise traffic on known ports), raise the threshold
+     * so we don't generate false positives, and lower it when the baseline is high. */
+    double dyn_thresh = ctx->cfg.entropy_low_thresh;
+    if (ctx->entropy_hist_count >= 5) {
+        double hist_sum = 0.0;
+        uint32_t n = ctx->entropy_hist_count < 10 ? ctx->entropy_hist_count : 10;
+        for (uint32_t i = 0; i < n; i++) hist_sum += ctx->entropy_history[i];
+        double hist_mean = hist_sum / (double)n;
+        /* Blend: 80% configured threshold, 20% converging toward network mean.
+         * Caps prevent threshold from drifting outside useful range. */
+        dyn_thresh = ctx->cfg.entropy_low_thresh * 0.8 + hist_mean * 0.2;
+        if (dyn_thresh < 0.05) dyn_thresh = 0.05;
+        if (dyn_thresh > 0.50) dyn_thresh = 0.50;
+    }
+
     /* Low src_port_entropy: many packets from same port -> flood */
-    if (f->packet_count > 20 && f->src_port_entropy < ctx->cfg.entropy_low_thresh) {
+    if (f->packet_count > 20 && f->src_port_entropy < dyn_thresh) {
         score += 0.4;
     }
     /* Low dst_port_entropy: single destination port -> targeted flood */
-    if (f->packet_count > 20 && f->dst_port_entropy < ctx->cfg.entropy_low_thresh) {
+    if (f->packet_count > 20 && f->dst_port_entropy < dyn_thresh) {
         score += 0.2;
     }
     /* High payload entropy: randomised attack payloads */
@@ -504,6 +551,54 @@ static double score_entropy(de_context_t *ctx,
     }
 
     return clamp01(score);
+}
+
+/* ============================================================================
+ * MODEL 5b: CHI-SQUARE CONCENTRATION MODEL
+ *
+ * Tests whether this source's PPS is anomalously concentrated relative to
+ * the global expected traffic rate.  A high chi-square statistic means one
+ * IP is responsible for a disproportionate fraction of observed traffic —
+ * the defining signature of a volumetric single-source DDoS.
+ *
+ * Inspired by ksananth4424 chi-square IP distribution monitoring.
+ * ============================================================================ */
+
+static double score_chi_square(de_context_t *ctx,
+                               const sentinel_feature_vector_t *f)
+{
+    double alpha = ctx->cfg.ewma_smoothing;
+
+    /* Update the global PPS baseline (EWMA + MAD) before scoring.
+     * We include this source's sample so the model self-bootstraps on first traffic. */
+    if (ctx->global_pps_obs == 0) {
+        ctx->global_pps_ewma = f->packets_per_second;
+        ctx->global_pps_mmd  = 0.0;
+    } else {
+        double prev_g        = ctx->global_pps_ewma;
+        ctx->global_pps_ewma = alpha * f->packets_per_second + (1.0 - alpha) * prev_g;
+        ctx->global_pps_mmd  = alpha * fabs(f->packets_per_second - prev_g) +
+                               (1.0 - alpha) * ctx->global_pps_mmd;
+        if (isnan(ctx->global_pps_ewma) || isinf(ctx->global_pps_ewma)) ctx->global_pps_ewma = 0.0;
+        if (isnan(ctx->global_pps_mmd)  || isinf(ctx->global_pps_mmd))  ctx->global_pps_mmd  = 0.0;
+    }
+    ctx->global_pps_obs++;
+
+    /* Warmup: need at least 20 samples to establish a stable global baseline. */
+    if (ctx->global_pps_obs < 20) return 0.0;
+
+    double expected = ctx->global_pps_ewma;
+    if (expected < 1.0) return 0.0;
+
+    /* Chi-square test statistic for this source vs. global expected rate:
+     *   chi = (observed - expected)^2 / expected
+     * A large value means this source dominates traffic (concentrated attack). */
+    double observed  = f->packets_per_second;
+    double deviation = observed - expected;
+    double chi       = (deviation * deviation) / expected;
+
+    /* Normalise against the configured threshold (default 50.0 = moderate concentration). */
+    return clamp01(chi / ctx->cfg.chi_square_thresh);
 }
 
 /* ============================================================================
@@ -865,14 +960,17 @@ int de_classify(de_context_t *ctx,
     double s_proto = score_protocol(ctx, features);
     double s_behav = score_behavioral(ctx, features);
     double s_l7    = score_l7_asymmetry(ctx, features);
-    double pre_ml_threat = ctx->cfg.weight_volume    * s_vol
-                         + ctx->cfg.weight_entropy   * s_ent
-                         + ctx->cfg.weight_protocol  * s_proto
-                         + ctx->cfg.weight_behavioral * s_behav
-                         + ctx->cfg.weight_l7        * s_l7;
+    /* Chi-square concentration model: detects single-source traffic dominance. */
+    double s_chi   = score_chi_square(ctx, features);
+    double pre_ml_threat = ctx->cfg.weight_volume      * s_vol
+                         + ctx->cfg.weight_entropy     * s_ent
+                         + ctx->cfg.weight_protocol    * s_proto
+                         + ctx->cfg.weight_behavioral  * s_behav
+                         + ctx->cfg.weight_l7          * s_l7
+                         + ctx->cfg.weight_chi_square  * s_chi;
     double pre_ml_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                            ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
-                           ctx->cfg.weight_l7;
+                           ctx->cfg.weight_l7 + ctx->cfg.weight_chi_square;
     if (pre_ml_weight > 0.0) pre_ml_threat /= pre_ml_weight;
     pre_ml_threat = clamp01(pre_ml_threat);
 
@@ -885,30 +983,40 @@ int de_classify(de_context_t *ctx,
         ctx->cfg.ml_max_isolation
     );
 
-    double core_threat = ctx->cfg.weight_volume    * s_vol
-                       + ctx->cfg.weight_entropy   * s_ent
-                       + ctx->cfg.weight_protocol  * s_proto
-                       + ctx->cfg.weight_behavioral * s_behav
-                       + ctx->cfg.weight_ml        * ml_score.effective_score
-                       + ctx->cfg.weight_l7        * s_l7;
+    double core_threat = ctx->cfg.weight_volume      * s_vol
+                       + ctx->cfg.weight_entropy     * s_ent
+                       + ctx->cfg.weight_protocol    * s_proto
+                       + ctx->cfg.weight_behavioral  * s_behav
+                       + ctx->cfg.weight_ml          * ml_score.effective_score
+                       + ctx->cfg.weight_l7          * s_l7
+                       + ctx->cfg.weight_chi_square  * s_chi;
     double core_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                          ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
-                         ctx->cfg.weight_ml + ctx->cfg.weight_l7;
+                         ctx->cfg.weight_ml + ctx->cfg.weight_l7 + ctx->cfg.weight_chi_square;
     if (core_weight > 0.0) core_threat /= core_weight;
     core_threat = clamp01(core_threat);
 
     int allow_anomaly_update = (core_threat <= ctx->cfg.anomaly_learn_max_threat);
     double s_anom  = score_online_anomaly(ctx, features, allow_anomaly_update);
 
-    double non_ml_threat = ctx->cfg.weight_volume    * s_vol
-                         + ctx->cfg.weight_entropy   * s_ent
-                         + ctx->cfg.weight_protocol  * s_proto
-                         + ctx->cfg.weight_behavioral * s_behav
-                         + ctx->cfg.weight_l7        * s_l7
-                         + ctx->cfg.weight_anomaly   * s_anom;
+    /* Update dynamic entropy history: track benign-period entropy so the adaptive
+     * threshold in score_entropy() can learn the network's natural entropy baseline. */
+    if (allow_anomaly_update && features->packet_count > 20) {
+        ctx->entropy_history[ctx->entropy_hist_idx] = features->src_port_entropy;
+        ctx->entropy_hist_idx = (ctx->entropy_hist_idx + 1) % 10;
+        if (ctx->entropy_hist_count < 10) ctx->entropy_hist_count++;
+    }
+
+    double non_ml_threat = ctx->cfg.weight_volume      * s_vol
+                         + ctx->cfg.weight_entropy     * s_ent
+                         + ctx->cfg.weight_protocol    * s_proto
+                         + ctx->cfg.weight_behavioral  * s_behav
+                         + ctx->cfg.weight_l7          * s_l7
+                         + ctx->cfg.weight_anomaly     * s_anom
+                         + ctx->cfg.weight_chi_square  * s_chi;
     double non_ml_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                            ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
-                           ctx->cfg.weight_l7 + ctx->cfg.weight_anomaly;
+                           ctx->cfg.weight_l7 + ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square;
     if (non_ml_weight > 0.0) non_ml_threat /= non_ml_weight;
     non_ml_threat = clamp01(non_ml_threat);
 
@@ -919,19 +1027,20 @@ int de_classify(de_context_t *ctx,
     }
 
     /* weighted combination */
-    double threat = ctx->cfg.weight_volume    * s_vol
-                  + ctx->cfg.weight_entropy   * s_ent
-                  + ctx->cfg.weight_protocol  * s_proto
-                  + ctx->cfg.weight_behavioral * s_behav
-                  + ctx->cfg.weight_ml        * ml_score.effective_score
-                  + ctx->cfg.weight_l7        * s_l7
-                  + ctx->cfg.weight_anomaly   * s_anom;
+    double threat = ctx->cfg.weight_volume      * s_vol
+                  + ctx->cfg.weight_entropy     * s_ent
+                  + ctx->cfg.weight_protocol    * s_proto
+                  + ctx->cfg.weight_behavioral  * s_behav
+                  + ctx->cfg.weight_ml          * ml_score.effective_score
+                  + ctx->cfg.weight_l7          * s_l7
+                  + ctx->cfg.weight_anomaly     * s_anom
+                  + ctx->cfg.weight_chi_square  * s_chi;
 
     /* Absolute Reckoning Fix: Global Weight Normalization */
     double total_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                          ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
                          ctx->cfg.weight_ml + ctx->cfg.weight_l7 +
-                         ctx->cfg.weight_anomaly;
+                         ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square;
     if (total_weight > 0.0) threat /= total_weight;
 
     threat = clamp01(threat);
@@ -939,25 +1048,26 @@ int de_classify(de_context_t *ctx,
     /* confidence: higher when more observations and scores agree */
     double agreement = 1.0;
     {
-        double scores[7] = { s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom };
-        double mean = (s_vol + s_ent + s_proto + s_behav + ml_score.effective_score + s_l7 + s_anom) / 7.0;
+        double scores[8] = { s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom, s_chi };
+        double mean = (s_vol + s_ent + s_proto + s_behav + ml_score.effective_score + s_l7 + s_anom + s_chi) / 8.0;
         double var = 0;
-        for (int i = 0; i < 7; i++) var += (scores[i] - mean) * (scores[i] - mean);
-        var /= 7.0;
+        for (int i = 0; i < 8; i++) var += (scores[i] - mean) * (scores[i] - mean);
+        var /= 8.0;
         /* low variance -> high agreement -> high confidence */
         agreement = 1.0 - clamp01(sqrt(var));
     }
     double confidence = clamp01((0.45 * agreement) + (0.35 * obs_factor) + (0.20 * ml_score.reliability));
 
     /* store scores */
-    out->score_volume     = s_vol;
-    out->score_entropy    = s_ent;
-    out->score_protocol   = s_proto;
-    out->score_behavioral = s_behav;
-    out->score_ml         = ml_score.raw_score;
-    out->score_l7         = s_l7;
-    out->score_anomaly    = s_anom;
-    out->ml_reliability   = ml_score.reliability;
+    out->score_volume      = s_vol;
+    out->score_entropy     = s_ent;
+    out->score_protocol    = s_proto;
+    out->score_behavioral  = s_behav;
+    out->score_ml          = ml_score.raw_score;
+    out->score_l7          = s_l7;
+    out->score_anomaly     = s_anom;
+    out->score_chi_square  = s_chi;
+    out->ml_reliability    = ml_score.reliability;
     out->threat_score     = threat;
     out->confidence       = confidence;
 
@@ -993,6 +1103,7 @@ int de_classify(de_context_t *ctx,
         if (s_behav > strongest_non_ml) strongest_non_ml = s_behav;
         if (s_l7 > strongest_non_ml) strongest_non_ml = s_l7;
         if (s_anom > strongest_non_ml) strongest_non_ml = s_anom;
+        if (s_chi > strongest_non_ml) strongest_non_ml = s_chi;
 
         int heuristics_strong =
             (non_ml_threat >= ctx->cfg.min_non_ml_score_for_hard_block) ||
@@ -1037,6 +1148,12 @@ void de_reset_baselines(de_context_t *ctx)
     memset(ctx->anom_ewma, 0, sizeof(ctx->anom_ewma));
     memset(ctx->anom_var, 0, sizeof(ctx->anom_var));
     memset(ctx->anom_obs, 0, sizeof(ctx->anom_obs));
+    ctx->global_pps_ewma   = 0.0;
+    ctx->global_pps_mmd    = 0.0;
+    ctx->global_pps_obs    = 0;
+    memset(ctx->entropy_history, 0, sizeof(ctx->entropy_history));
+    ctx->entropy_hist_idx   = 0;
+    ctx->entropy_hist_count = 0;
 }
 
 uint32_t de_baseline_count(const de_context_t *ctx)

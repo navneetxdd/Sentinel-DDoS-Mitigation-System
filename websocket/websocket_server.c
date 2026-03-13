@@ -643,11 +643,11 @@ flush_phase:
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"type\":\"feature_importance\",\"data\":{"
                         "\"volume_weight\":%.3f,\"entropy_weight\":%.3f,\"protocol_weight\":%.3f,\"behavioral_weight\":%.3f,"
-                        "\"ml_weight\":%.3f,\"l7_weight\":%.3f,\"anomaly_weight\":%.3f,"
+                        "\"ml_weight\":%.3f,\"l7_weight\":%.3f,\"anomaly_weight\":%.3f,\"chi_square_weight\":%.3f,"
                         "\"avg_threat_score\":%.3f,\"detections_last_10s\":%u,"
                         "\"policy_arm\":%u,\"policy_updates\":%lu,\"policy_last_reward\":%.3f}}",
                         f->volume_weight, f->entropy_weight, f->protocol_weight, f->behavioral_weight,
-                        f->ml_weight, f->l7_weight, f->anomaly_weight,
+                        f->ml_weight, f->l7_weight, f->anomaly_weight, f->chi_square_weight,
                         f->avg_threat_score, f->detections_last_10s,
                         f->policy_arm, (unsigned long)f->policy_updates, f->policy_last_reward);
                     break;

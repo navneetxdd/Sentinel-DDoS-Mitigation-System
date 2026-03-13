@@ -130,6 +130,7 @@ typedef struct ws_feature_importance {
     double ml_weight;
     double l7_weight;
     double anomaly_weight;
+    double chi_square_weight;
     double avg_threat_score;
     uint32_t detections_last_10s;
     uint32_t policy_arm;

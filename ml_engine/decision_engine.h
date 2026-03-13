@@ -16,6 +16,19 @@
  * Optional online anomaly model:
  *   Streaming multivariate anomaly score using EWMA mean/variance over
  *   global traffic features to improve sensitivity to evolving patterns.
+ *
+ * Additional models (from research integration):
+ *   5. Chi-square concentration test (global traffic dominance detection)
+ *
+ * Per-source EWMA now uses Exponential Weighted Mean Absolute Deviation (EWMMD)
+ * instead of variance — more robust against flood attacks that inflate squared
+ * deviations and could suppress future anomaly signals.
+ *
+ * Rate-of-change (derivative) feature added to volume scoring for sudden-onset
+ * flood detection before the EWMA baseline adapts.
+ *
+ * Dynamic entropy threshold: entropy low-threshold adapts to the recent network
+ * entropy history to reduce false positives in low-entropy networks.
  */
 
 #ifndef SENTINEL_DECISION_ENGINE_H
@@ -74,6 +87,10 @@ typedef struct de_thresholds {
     double   weight_ml;
     double   weight_l7;
     double   weight_anomaly;
+    double   weight_chi_square;   /* chi-square concentration model weight */
+
+    /* chi-square thresholds */
+    double   chi_square_thresh;   /* normalization divisor for chi stat (default 50.0) */
 
     /* online anomaly configuration */
     double   anomaly_smoothing;
@@ -113,6 +130,8 @@ typedef struct de_thresholds {
     .weight_ml          = 0.35, \
     .weight_l7          = 0.10, \
     .weight_anomaly     = 0.05, \
+    .weight_chi_square  = 0.05, \
+    .chi_square_thresh  = 50.0, \
     .anomaly_smoothing  = 0.02, \
     .anomaly_sigma      = 3.5,  \
     .anomaly_warmup     = 64,   \
