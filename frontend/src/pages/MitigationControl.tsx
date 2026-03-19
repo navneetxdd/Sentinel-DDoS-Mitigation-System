@@ -1,4 +1,6 @@
 import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { GridLayout, StatCard } from "@/components/layout/GridPanel";
 import { MitigationTimeline } from "@/components/dashboard/MitigationTimeline";
 import { AutoMitigationToggle } from "@/components/dashboard/AutoMitigationToggle";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
@@ -11,9 +13,14 @@ import {
   Gauge,
   Eye,
   Server,
+  Download,
+  Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useEffect, useCallback, useState } from "react";
+import { getMitigationIntegrationSettings } from "@/lib/settingsStorage";
+import type { SentinelActivity } from "@/hooks/useSentinelWebSocket";
+import { toast } from "@/hooks/use-toast";
 
 const ATTACK_TYPE_TO_PROTOCOL: Record<string, string> = {
   SYN_FLOOD: "TCP",
@@ -36,14 +43,15 @@ const MitigationControl = () => {
   const autoMitigation = ws.mitigationStatus?.auto_mitigation_enabled ?? false;
 
   const stats = [
-    { label: "Blocked IPs", value: ws.mitigationStatus?.total_blocked ?? 0, icon: Ban, color: "text-status-danger", bgColor: "bg-status-danger/10" },
-    { label: "Rate Limited", value: ws.mitigationStatus?.total_rate_limited ?? 0, icon: Gauge, color: "text-cyber-orange", bgColor: "bg-cyber-orange/10" },
-    { label: "Monitored", value: ws.mitigationStatus?.total_monitored ?? 0, icon: Eye, color: "text-status-warning", bgColor: "bg-status-warning/10" },
-    { label: "Whitelisted", value: ws.mitigationStatus?.total_whitelisted ?? 0, icon: CheckCircle, color: "text-status-success", bgColor: "bg-status-success/10" },
+    { label: "Blocked IPs", value: ws.mitigationStatus?.total_blocked ?? 0, icon: Ban, variant: "danger" as const },
+    { label: "Rate Limited", value: ws.mitigationStatus?.total_rate_limited ?? 0, icon: Gauge, variant: "warning" as const },
+    { label: "Monitored", value: ws.mitigationStatus?.total_monitored ?? 0, icon: Eye, variant: "default" as const },
+    { label: "Whitelisted", value: ws.mitigationStatus?.total_whitelisted ?? 0, icon: CheckCircle, variant: "success" as const },
   ];
 
   const kernelDrops = ws.mitigationStatus?.kernel_dropping_enabled ?? false;
   const sdnStatus = ws.mitigationStatus?.sdn_connected;
+  const gatekeeperStatus = ws.integrationStatus?.gatekeeper_connected;
 
   // Merge live stream events with the persisted history loaded from the SQLite
   // event log on mount. Live events take precedence; persisted events fill in
@@ -79,97 +87,239 @@ const MitigationControl = () => {
     });
   }, [mergedActivities]);
 
+  const [blockIpInput, setBlockIpInput] = useState("");
+
   const lastActionTime =
     mergedActivities.length > 0
       ? new Date(mergedActivities[0].timestamp * 1000).toLocaleTimeString()
       : "-";
 
+  const handleBlockIp = useCallback(() => {
+    const v = blockIpInput.trim();
+    if (!v) return;
+    if (v.includes(":")) {
+      ws.sendCommand("block_ip_port", { value: v });
+      toast({ title: "Block IP:Port", description: `Queued block for ${v}` });
+    } else {
+      ws.sendCommand("block_ip", { ip: v });
+      toast({ title: "Block IP", description: `Queued block for ${v}` });
+    }
+    setBlockIpInput("");
+  }, [blockIpInput, ws]);
+
   const activeThreats =
     (ws.mitigationStatus?.total_blocked ?? 0) +
     (ws.mitigationStatus?.total_rate_limited ?? 0);
+  const lastCommandResult = ws.lastCommandResult;
+
+  const lastAlertSentRef = useRef<string>("");
+  const lastWebhookFailedToastRef = useRef(false);
+  const postAlertWebhook = useCallback((payload: { timestamp: string; event: string; sourceIp?: string; blockedCount?: number; message?: string }) => {
+    const { alertWebhookUrl, alertWebhookSecret } = getMitigationIntegrationSettings();
+    const url = alertWebhookUrl.trim();
+    if (!url) return;
+    try {
+      new URL(url);
+    } catch {
+      return;
+    }
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (alertWebhookSecret.trim()) headers["Authorization"] = `Bearer ${alertWebhookSecret.trim()}`;
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 10000);
+    fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal: controller.signal })
+      .then((r) => { clearTimeout(t); if (!r.ok) throw new Error(`HTTP ${r.status}`); })
+      .catch(() => {
+        clearTimeout(t);
+        if (!lastWebhookFailedToastRef.current) {
+          lastWebhookFailedToastRef.current = true;
+          toast({ title: "Alert webhook failed", description: "Check URL and network. Alerts may not have been delivered.", variant: "destructive" });
+        }
+      });
+  }, []);
+
+  useEffect(() => {
+    const first = mergedActivities[0];
+    if (!first) return;
+    const key = `${first.timestamp}-${first.src_ip}`;
+    if (lastAlertSentRef.current === key) return;
+    const actionLower = first.action.toLowerCase();
+    const isBlock = actionLower.includes("block") && first.enforced;
+    const isRateLimit = actionLower.includes("rate") && first.enforced;
+    if (!isBlock && !isRateLimit) return;
+    lastAlertSentRef.current = key;
+    postAlertWebhook({
+      timestamp: new Date().toISOString(),
+      event: isBlock ? "block" : "rate_limit",
+      sourceIp: first.src_ip,
+      message: `${first.action} — ${first.attack_type} (threat: ${first.threat_score.toFixed(2)})`,
+    });
+  }, [mergedActivities, postAlertWebhook]);
+
+  const handleExportCsv = useCallback(() => {
+    const rows = mergedActivities.map((a: SentinelActivity) => [
+      new Date(a.timestamp * 1000).toISOString(),
+      a.src_ip,
+      a.action,
+      a.attack_type,
+      String(a.threat_score),
+      a.reason,
+      a.enforced ? "yes" : "no",
+    ]);
+    const header = "Time,Source IP,Action,Attack Type,Threat Score,Reason,Enforced\n";
+    const csv = header + rows.map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sentinel-activity-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [mergedActivities]);
+
+  const handleBlockAllFlagged = useCallback(() => {
+    ws.sendCommand("block_all_flagged");
+    const { alertWebhookUrl } = getMitigationIntegrationSettings();
+    if (alertWebhookUrl.trim()) {
+      postAlertWebhook({
+        timestamp: new Date().toISOString(),
+        event: "block_all_flagged",
+        blockedCount: ws.mitigationStatus?.total_monitored ?? 0,
+        message: "Block All Flagged triggered from dashboard",
+      });
+    }
+  }, [ws, postAlertWebhook]);
+
+  const handlePushBlockedToApi = useCallback(async () => {
+    const { externalFirewallApiUrl } = getMitigationIntegrationSettings();
+    const url = externalFirewallApiUrl.trim();
+    if (!url) return;
+    try {
+      new URL(url);
+    } catch {
+      toast({ title: "Invalid API URL", description: "Check Settings → External firewall API URL.", variant: "destructive" });
+      return;
+    }
+    const ips = (ws.blockedIPs ?? []).map((b) => b.ip);
+    if (ips.length === 0) {
+      toast({ title: "No blocked IPs", description: "Nothing to push.", variant: "default" });
+      return;
+    }
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 15000);
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ips }),
+        signal: controller.signal,
+      });
+      clearTimeout(t);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      toast({ title: "Pushed to API", description: `${ips.length} IP(s) sent.` });
+    } catch (e) {
+      clearTimeout(t);
+      toast({
+        title: "External API failed",
+        description: e instanceof Error ? e.message : "Request failed or timed out.",
+        variant: "destructive",
+      });
+    }
+  }, [ws.blockedIPs]);
 
   return (
     <DashboardLayout connected={ws.connected}>
       <div className="space-y-6 animate-fade-in">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-md bg-secondary">
-              <Shield className="w-6 h-6 text-foreground" />
+        <PageHeader
+          title="Mitigation Control"
+          description="Manage and monitor threat mitigation actions"
+          icon={<Shield className="w-6 h-6 text-foreground" />}
+          action={
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-secondary border border-border">
+              <Clock className="w-4 h-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">Last action: {lastActionTime}</span>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight">Mitigation Control</h1>
-              <p className="text-sm text-muted-foreground">
-                Manage and monitor threat mitigation actions
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-secondary border border-border">
-            <Clock className="w-4 h-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">Last action: {lastActionTime}</span>
-          </div>
-        </div>
+          }
+        />
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {ws.telemetrySchemaMismatch ? (
+          <div className="rounded-md border border-status-danger/30 bg-status-danger/5 px-4 py-3">
+            <p className="text-xs text-status-danger font-medium">Degraded mode: telemetry schema mismatch</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {ws.telemetrySchemaError ?? "Unsupported telemetry schema received from backend."}
+            </p>
+          </div>
+        ) : null}
+
+        {ws.eventHistoryUnavailable ? (
+          <div className="rounded-md border border-status-warning/30 bg-status-warning/5 px-4 py-3">
+            <p className="text-xs text-status-warning font-medium">Event history unavailable</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Is the Explain API running? Timeline history is loaded from the Explain API; without it only live events are shown.
+            </p>
+          </div>
+        ) : null}
+
+        {(ws.activitySyncFailures ?? 0) > 0 ? (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-2">
+            <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+              Some activity events could not be synced to the Explain API ({ws.activitySyncFailures} failure{ws.activitySyncFailures !== 1 ? "s" : ""}). Check API and network.
+            </p>
+          </div>
+        ) : null}
+
+        <GridLayout cols={4} gap="md">
           {stats.map((stat) => (
-            <div key={stat.label} className="cyber-card glow-border p-4 rounded-lg">
-              <div className="flex items-center gap-3">
-                <div className={cn("p-2 rounded-md", stat.bgColor)}>
-                  <stat.icon className={cn("w-4 h-4", stat.color)} />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold font-mono">{stat.value}</p>
-                  <p className="text-xs text-muted-foreground">{stat.label}</p>
-                </div>
-              </div>
-            </div>
+            <StatCard
+              key={stat.label}
+              label={stat.label}
+              value={stat.value}
+              icon={<stat.icon className="w-5 h-5" />}
+              variant={stat.variant}
+            />
           ))}
-        </div>
+        </GridLayout>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className={cn("cyber-card glow-border p-4 rounded-lg", kernelDrops ? "border-status-success/20" : "border-cyber-orange/30")}>
-            <div className="flex items-center gap-3">
-              <div className={cn("p-2 rounded-md", kernelDrops ? "bg-status-success/10" : "bg-cyber-orange/10")}>
-                <Shield className={cn("w-4 h-4", kernelDrops ? "text-status-success" : "text-cyber-orange")} />
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Kernel Drops</p>
-                <p className={cn("font-semibold text-sm", kernelDrops ? "text-status-success" : "text-cyber-orange")}>
-                  {kernelDrops ? "Active" : "Disabled (fallback mode)"}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className={cn(
-            "cyber-card glow-border p-4 rounded-lg",
-            sdnStatus === 1 ? "border-status-success/20" : sdnStatus === 0 ? "border-status-danger/20" : "border-border"
-          )}>
-            <div className="flex items-center gap-3">
-              <div className={cn(
-                "p-2 rounded-md",
-                sdnStatus === 1 ? "bg-status-success/10" : sdnStatus === 0 ? "bg-status-danger/10" : "bg-muted"
-              )}>
-                <Server className={cn(
-                  "w-4 h-4",
-                  sdnStatus === 1 ? "text-status-success" : sdnStatus === 0 ? "text-status-danger" : "text-muted-foreground"
-                )} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-muted-foreground">SDN Controller</p>
-                <p className={cn(
-                  "font-semibold text-sm",
-                  sdnStatus === 1 ? "text-status-success" : sdnStatus === 0 ? "text-status-danger" : "text-muted-foreground"
-                )}>
-                  {sdnStatus === 1 ? "Connected" : sdnStatus === 0 ? "Unreachable" : "Unknown"}
-                </p>
-                {sdnStatus === 0 && ws.mitigationStatus?.sdn_last_error ? (
-                  <p className="text-xs text-status-danger/90 mt-1 truncate" title={ws.mitigationStatus.sdn_last_error}>
-                    {ws.mitigationStatus.sdn_last_error}
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        </div>
+        <GridLayout cols={3} gap="md">
+          <StatCard
+            label="Kernel Drops"
+            value={kernelDrops ? "Active" : "Disabled"}
+            unit={kernelDrops ? "eBPF" : "fallback mode"}
+            icon={<Shield className="w-5 h-5" />}
+            variant={kernelDrops ? "success" : "warning"}
+          />
+          <StatCard
+            label="SDN Controller"
+            value={sdnStatus === 1 ? "Connected" : sdnStatus === 0 ? "Unreachable" : "Unknown"}
+            unit={sdnStatus === 0 ? "controller error" : "control plane"}
+            icon={<Server className="w-5 h-5" />}
+            variant={sdnStatus === 1 ? "success" : sdnStatus === 0 ? "danger" : "default"}
+          />
+          <StatCard
+            label="Gatekeeper Sidecar"
+            value={gatekeeperStatus === 1 ? "Connected" : gatekeeperStatus === 0 ? "Unreachable" : "Unknown"}
+            unit={ws.integrationStatus?.gatekeeper_enabled ? "health probe" : "disabled"}
+            icon={<Shield className="w-5 h-5" />}
+            variant={gatekeeperStatus === 1 ? "success" : gatekeeperStatus === 0 ? "danger" : "default"}
+          />
+        </GridLayout>
+        {sdnStatus === 0 && ws.mitigationStatus?.sdn_last_error ? (
+          <p className="text-xs text-status-danger/90 -mt-2">SDN error: {ws.mitigationStatus.sdn_last_error}</p>
+        ) : null}
+        {gatekeeperStatus === 0 && ws.integrationStatus?.gatekeeper_last_error ? (
+          <p className="text-xs text-status-danger/90 -mt-2">Gatekeeper error: {ws.integrationStatus.gatekeeper_last_error}</p>
+        ) : null}
+        {ws.integrationStatus?.gatekeeper_circuit_open ? (
+          <p className="text-xs text-status-warning/90 -mt-2">
+            Gatekeeper circuit is open
+            {ws.integrationStatus.gatekeeper_next_retry_sec
+              ? ` (retry in ${ws.integrationStatus.gatekeeper_next_retry_sec}s)`
+              : ""}
+          </p>
+        ) : null}
+        {(sdnStatus === 0 || gatekeeperStatus === 0) ? (
+          <p className="text-xs text-muted-foreground mt-1">If a service shows Unreachable, ensure it is running and reachable from the pipeline host.</p>
+        ) : null}
 
         <AutoMitigationToggle
           isEnabled={autoMitigation}
@@ -183,7 +333,17 @@ const MitigationControl = () => {
         />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div ref={timelineRef} className="lg:col-span-2">
+          <div ref={timelineRef} className="lg:col-span-2 self-start space-y-2">
+            {mergedActivities.length > 0 && (
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Export activity log to CSV
+              </button>
+            )}
             {timelineEntries.length > 0 ? (
               <MitigationTimeline entries={timelineEntries} />
             ) : (
@@ -203,8 +363,27 @@ const MitigationControl = () => {
             <div className="cyber-card glow-border p-5 rounded-lg">
               <h3 className="font-semibold mb-4">Quick Actions</h3>
               <div className="space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="IP or IP:port"
+                    value={blockIpInput}
+                    onChange={(e) => setBlockIpInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleBlockIp()}
+                    className="flex-1 min-w-0 rounded-md border border-border bg-background px-3 py-2 text-sm"
+                    aria-label="Block IP or IP:port"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleBlockIp}
+                    disabled={!blockIpInput.trim()}
+                    className="px-3 py-2 rounded-md bg-status-danger/10 text-status-danger border border-status-danger/20 hover:bg-status-danger/15 disabled:opacity-50 text-sm font-medium"
+                  >
+                    Block
+                  </button>
+                </div>
                 <button
-                  onClick={() => ws.sendCommand("block_all_flagged")}
+                  onClick={handleBlockAllFlagged}
                   className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-status-danger/10 text-status-danger border border-status-danger/20 hover:bg-status-danger/15 transition-colors"
                 >
                   <Ban className="w-4 h-4" />
@@ -231,7 +410,40 @@ const MitigationControl = () => {
                   <CheckCircle className="w-4 h-4" />
                   <span className="font-medium text-sm">Clear All Blocks</span>
                 </button>
+                {getMitigationIntegrationSettings().externalFirewallApiUrl.trim() && (
+                  <button
+                    type="button"
+                    onClick={handlePushBlockedToApi}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-secondary border border-border hover:bg-secondary/80 transition-colors text-sm"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span className="font-medium text-sm">Push blocked IPs to external API</span>
+                  </button>
+                )}
               </div>
+              {lastCommandResult ? (
+                <div
+                  className={cn(
+                    "mt-4 rounded-md border px-3 py-2 text-xs",
+                    lastCommandResult.success
+                      ? "border-status-success/30 bg-status-success/5 text-status-success"
+                      : "border-status-danger/30 bg-status-danger/5 text-status-danger",
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{lastCommandResult.command}</span>
+                    <span className="text-[11px] opacity-80">
+                      {new Date(lastCommandResult.timestamp * 1000).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">{lastCommandResult.message}</p>
+                  {lastCommandResult.request_id ? (
+                    <p className="mt-1 font-mono text-[10px] text-muted-foreground/90">
+                      req={lastCommandResult.request_id} v{lastCommandResult.contract_version}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
 
             {activeThreats > 0 ? (
@@ -283,7 +495,7 @@ const MitigationControl = () => {
               Blocked IPs
             </h3>
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
-              {ws.blockedIPs.length > 0 ? (
+              {(ws.blockedIPs ?? []).length > 0 ? (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
@@ -292,7 +504,7 @@ const MitigationControl = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {ws.blockedIPs.map((entry, idx) => (
+                    {(ws.blockedIPs ?? []).map((entry, idx) => (
                       <tr key={`${entry.ip}-${idx}`} className="border-b border-border/50">
                         <td className="py-2 font-mono">{entry.ip}</td>
                         <td className="py-2 text-right">
@@ -320,7 +532,7 @@ const MitigationControl = () => {
               Rate-Limited IPs
             </h3>
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
-              {ws.rateLimitedIPs.length > 0 ? (
+              {(ws.rateLimitedIPs ?? []).length > 0 ? (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
@@ -330,7 +542,7 @@ const MitigationControl = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {ws.rateLimitedIPs.map((entry, idx) => (
+                    {(ws.rateLimitedIPs ?? []).map((entry, idx) => (
                       <tr key={`${entry.ip}-${idx}`} className="border-b border-border/50">
                         <td className="py-2 font-mono">{entry.ip}</td>
                         <td className="py-2 font-mono">{entry.limit_pps}</td>
@@ -359,7 +571,7 @@ const MitigationControl = () => {
               Monitored IPs
             </h3>
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
-              {ws.monitoredIPs.length > 0 ? (
+              {(ws.monitoredIPs ?? []).length > 0 ? (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
@@ -367,7 +579,7 @@ const MitigationControl = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {ws.monitoredIPs.map((entry, idx) => (
+                    {(ws.monitoredIPs ?? []).map((entry, idx) => (
                       <tr key={`${entry.ip}-${idx}`} className="border-b border-border/50">
                         <td className="py-2 font-mono">{entry.ip}</td>
                       </tr>
@@ -386,7 +598,7 @@ const MitigationControl = () => {
               Whitelisted IPs
             </h3>
             <div className="overflow-x-auto max-h-48 overflow-y-auto">
-              {ws.whitelistedIPs.length > 0 ? (
+              {(ws.whitelistedIPs ?? []).length > 0 ? (
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border">
@@ -394,7 +606,7 @@ const MitigationControl = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {ws.whitelistedIPs.map((entry, idx) => (
+                    {(ws.whitelistedIPs ?? []).map((entry, idx) => (
                       <tr key={`${entry.ip}-${idx}`} className="border-b border-border/50">
                         <td className="py-2 font-mono">{entry.ip}</td>
                       </tr>

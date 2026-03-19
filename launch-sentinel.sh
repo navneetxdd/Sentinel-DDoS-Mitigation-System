@@ -4,29 +4,44 @@
 #   Sentinel DDoS Mitigation System - Linux Multi-Terminal
 # ========================================================
 
-# Function to spawn a new terminal window
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "${ROOT_DIR}/scripts/load_profile.sh" ]; then
+    # shellcheck disable=SC1091
+    . "${ROOT_DIR}/scripts/load_profile.sh"
+    sentinel_load_profile "${ROOT_DIR}" || true
+fi
+
+# Function to spawn a new terminal window or fallback to background/logging if headless
 spawn_terminal() {
     local title="$1"
     local command="$2"
+    local logfile="/tmp/sentinel_${title// /_}.log"
     
-    # Try common terminal emulators found on Kali
-    if command -v xfce4-terminal &> /dev/null; then
-        xfce4-terminal --title="$title" -e "$command" &
-    elif command -v qterminal &> /dev/null; then
-        qterminal -e "$command" &
-    elif command -v gnome-terminal &> /dev/null; then
-        gnome-terminal --title="$title" -- bash -c "$command" &
-    elif command -v x-terminal-emulator &> /dev/null; then
-        x-terminal-emulator -e "$command" &
-    else
-        echo "Error: No supported terminal emulator found."
-        exit 1
+    # Check if a display is available (required for terminal emulators)
+    if [ -n "$DISPLAY" ]; then
+        # Try common terminal emulators
+        if command -v xfce4-terminal &> /dev/null; then
+            xfce4-terminal --title="$title" -e "$command" &
+            return
+        elif command -v qterminal &> /dev/null; then
+            qterminal -e "$command" &
+            return
+        elif command -v gnome-terminal &> /dev/null; then
+            gnome-terminal --title="$title" -- bash -c "$command" &
+            return
+        fi
     fi
+
+    # Headless Fallback: Run in background and redirect to log
+    echo "[HEADLESS] Spawning '$title' in background -> $logfile"
+    echo "--- [SENTINEL START: $title] ---" > "$logfile"
+    nohup bash -c "$command" >> "$logfile" 2>&1 &
 }
 
 echo "========================================================"
 echo "    Sentinel DDoS Mitigation System - Multi-Launcher"
 echo "========================================================"
+echo "Profile: ${SENTINEL_INTEGRATION_PROFILE:-baseline}"
 echo ""
 
 echo "[1/5] Compiling C Backend Pipeline..."

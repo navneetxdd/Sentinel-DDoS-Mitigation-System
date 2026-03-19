@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { HealthSummaryBar } from "@/components/dashboard/HealthSummaryBar";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -86,7 +87,7 @@ export function DashboardLayout({ children, connected = false }: DashboardLayout
           </nav>
 
           {sidebarOpen && (
-            <div className="p-3 border-t border-sidebar-border">
+            <div className="p-3 border-t border-sidebar-border space-y-2">
               <div className="p-3 rounded-md bg-secondary/50">
                 <div className="flex items-center gap-2 mb-1">
                   <div className={cn("w-1.5 h-1.5 rounded-full", connected ? "bg-status-success" : "bg-status-danger")} />
@@ -98,6 +99,7 @@ export function DashboardLayout({ children, connected = false }: DashboardLayout
                   {connected ? "Receiving live telemetry" : "Waiting for backend reconnect"}
                 </p>
               </div>
+              <HealthSummaryBar />
             </div>
           )}
         </div>

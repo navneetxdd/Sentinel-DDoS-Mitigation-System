@@ -15,6 +15,7 @@ const wsProtocol = typeof window !== "undefined" && window.location.protocol ===
 
 const explainApiUrl = import.meta.env.VITE_EXPLAIN_API_URL?.trim() ?? "";
 const wsUrl = import.meta.env.VITE_WS_URL?.trim() ?? "";
+export const WS_API_KEY = import.meta.env.VITE_WS_API_KEY?.trim() ?? "";
 
 export const EXPLAIN_API_CANDIDATES = makeUnique([
 	explainApiUrl ? trimTrailingSlash(explainApiUrl) : "",
@@ -39,7 +40,11 @@ export async function fetchExplainApi(path: string, init?: RequestInit): Promise
 
 	for (const baseUrl of EXPLAIN_API_CANDIDATES) {
 		try {
-			return await fetch(`${baseUrl}${normalizedPath}`, init);
+			const headers = new Headers(init?.headers);
+			if (WS_API_KEY) {
+				headers.set("X-Sentinel-API-Key", WS_API_KEY);
+			}
+			return await fetch(`${baseUrl}${normalizedPath}`, { ...init, headers });
 		} catch (error) {
 			lastError = error;
 		}

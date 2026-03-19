@@ -11,12 +11,20 @@ Supported inputs:
 The trainer only accepts real labeled data. It refuses to train when the
 accepted corpus collapses to a single class, when labels are missing, or when
 the input schema cannot be mapped with enough grounded features.
+
+DATASET SOURCING:
+To generate 'sentinel_model.joblib' for the Explain API:
+1. Download CIC-DDoS2019 or CIC-IoT-2023 (CSV versions).
+2. Place CSVs in a './data' directory.
+3. Run: python3 train_ml.py --dataset-dir ./data --export-joblib sentinel_model.joblib
 """
 
 from __future__ import annotations
 
 import csv
 import glob
+import importlib
+import hashlib
 import json
 import math
 import os
@@ -28,9 +36,10 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import m2cgen as m2c
     import numpy as np
     from sklearn.ensemble import IsolationForest, RandomForestClassifier
+    from sklearn.neighbors import KNeighborsClassifier
+    from sklearn.tree import DecisionTreeClassifier
     from sklearn.metrics import (
         accuracy_score,
         balanced_accuracy_score,
@@ -46,8 +55,13 @@ try:
     from sklearn.model_selection import train_test_split
     from sklearn.inspection import permutation_importance
 except ImportError:
-    print("WARNING: Required libraries missing. Run: pip install scikit-learn m2cgen numpy")
+    print("WARNING: Required libraries missing. Run: pip install scikit-learn numpy")
     sys.exit(1)
+
+try:
+    m2c = importlib.import_module("m2cgen")
+except Exception:
+    m2c = None
 
 try:
     import joblib
@@ -55,13 +69,13 @@ except ImportError:
     joblib = None
 
 try:
-    import pyarrow.parquet as pq
-except ImportError:
+    pq = importlib.import_module("pyarrow.parquet")
+except Exception:
     pq = None
 
 try:
-    from xgboost import XGBClassifier
-except ImportError:
+    XGBClassifier = getattr(importlib.import_module("xgboost"), "XGBClassifier", None)
+except Exception:
     XGBClassifier = None
 
 
@@ -72,6 +86,9 @@ DEFAULT_REQUIRED_DATASET_TYPES = ("ciciot2023", "nf_unsw_nb15_v2")
 TRAINER_VERSION = "2026-03-11-mixed-dataset-v7"
 BENCHMARK_ARTIFACT_NAME = "model_benchmark_report.json"
 BENCHMARK_ARTIFACT_DIRS = ("benchmarks", ("frontend", "public"))
+AUTO_DATA_DIR_CANDIDATES = (
+    "data",
+)
 SPLIT_PRIORITY = {
     "train": 0,
     "validation": 1,
@@ -101,6 +118,13 @@ FEATURE_NAMES = [
     "src_packets_per_second",
     "dns_query_count",
 ]
+
+SHAP_FEATURE_NAMES = FEATURE_NAMES + ["chi_square_score"]
+
+
+def compute_feature_schema_hash(feature_names: Sequence[str]) -> str:
+    normalized = "|".join(str(name).strip().lower() for name in feature_names)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 ML_MINMAX_LOW = np.zeros(NUM_FEATURES, dtype=np.float64)
 ML_MINMAX_HIGH = np.array(
@@ -396,6 +420,19 @@ def detect_dataset_type(path: str) -> Optional[str]:
         with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
             reader = csv.reader(handle)
             headers = next(reader, [])
+        if len(headers) == 4:
+            numeric_tokens = 0
+            for token in headers:
+                value = token.strip()
+                if not value:
+                    break
+                try:
+                    float(value)
+                    numeric_tokens += 1
+                except ValueError:
+                    break
+            if numeric_tokens == 4:
+                return "sdn_portblocking"
 
     if not headers:
         return None
@@ -1021,6 +1058,100 @@ def load_sentinel_feature_json(path: str, max_rows: int) -> Optional[DatasetChun
     )
 
 
+def load_sdn_portblocking_csv(path: str, max_rows: int) -> Optional[DatasetChunk]:
+    X_rows: List[List[float]] = []
+    y_list: List[int] = []
+    label_examples: List[str] = []
+    examples_seen = set()
+
+    feature_sources = {
+        "packets_per_second": "direct:col0",
+        "bytes_per_second": "derived:col0*64",
+        "syn_ratio": "direct:col2",
+        "rst_ratio": "derived:col1/(col0+1)",
+        "dst_port_entropy": "constant:0",
+        "payload_byte_entropy": "constant:0",
+        "unique_dst_ports": "direct:col1",
+        "avg_packet_size": "constant:64",
+        "stddev_packet_size": "derived:abs(col0-col1)",
+        "http_request_count": "constant:0",
+        "fin_ratio": "constant:0",
+        "src_port_entropy": "constant:0",
+        "unique_src_ports": "direct:col1",
+        "avg_ttl": "constant:0",
+        "stddev_ttl": "constant:0",
+        "avg_iat_us": "derived:1e6/(col0+1)",
+        "stddev_iat_us": "constant:0",
+        "src_total_flows": "direct:col1",
+        "src_packets_per_second": "direct:col0",
+        "dns_query_count": "constant:0",
+    }
+
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.reader(handle)
+        for row_index, row in enumerate(reader):
+            if max_rows and row_index >= max_rows:
+                break
+            if len(row) < 4:
+                continue
+
+            c0 = safe_float(row[0], 0.0)
+            c1 = safe_float(row[1], 0.0)
+            c2 = safe_float(row[2], 0.0)
+            label = parse_binary_label(row[3])
+            if label is None:
+                continue
+
+            syn_ratio = c2 if 0.0 <= c2 <= 1.0 else max(0.0, min(1.0, c2 / 100.0))
+            pps = max(0.0, c0)
+            ports = max(0.0, c1)
+
+            features = [
+                pps,
+                pps * 64.0,
+                syn_ratio,
+                safe_ratio(ports, pps + 1.0),
+                0.0,
+                0.0,
+                ports,
+                64.0,
+                abs(pps - ports),
+                0.0,
+                0.0,
+                0.0,
+                ports,
+                0.0,
+                0.0,
+                safe_div(1_000_000.0, pps + 1.0),
+                0.0,
+                ports,
+                pps,
+                0.0,
+            ]
+
+            X_rows.append(features)
+            y_list.append(label)
+
+            example = capture_label_example(row[3])
+            if example and example not in examples_seen and len(label_examples) < 6:
+                examples_seen.add(example)
+                label_examples.append(example)
+
+    if not X_rows:
+        return None
+
+    return DatasetChunk(
+        path=path,
+        dataset_type="sdn_portblocking",
+        split_hint=infer_split_hint(path),
+        label_column="col3",
+        label_examples=tuple(label_examples),
+        feature_sources=feature_sources,
+        X=np.asarray(X_rows, dtype=np.float64),
+        y=np.asarray(y_list, dtype=np.int64),
+    )
+
+
 LOADERS: Dict[str, Callable[[str, int], Optional[DatasetChunk]]] = {
     "sentinel_features": load_sentinel_feature_csv,
     "sentinel_json": load_sentinel_feature_json,
@@ -1028,6 +1159,7 @@ LOADERS: Dict[str, Callable[[str, int], Optional[DatasetChunk]]] = {
     "nf_unsw_nb15_v2": load_nf_unsw_nb15_v2,
     "unsw_nb15": load_unsw_nb15_csv,
     "cicddos2019": load_cicddos2019_csv,
+    "sdn_portblocking": load_sdn_portblocking_csv,
 }
 
 
@@ -1043,10 +1175,59 @@ def chunk_summary(chunk: DatasetChunk) -> str:
 
 
 def determine_data_dirs() -> List[str]:
+    repo_root = os.path.dirname(__file__)
+
+    def normalize_dirs(paths: Sequence[str]) -> List[str]:
+        result: List[str] = []
+        seen = set()
+        for item in paths:
+            if not item:
+                continue
+            p = item if os.path.isabs(item) else os.path.join(repo_root, item)
+            p = os.path.normpath(p)
+            if p in seen:
+                continue
+            if os.path.isdir(p):
+                seen.add(p)
+                result.append(p)
+        return result
+
+    def discover_data_dirs() -> List[str]:
+        discovered: List[str] = []
+        for entry in sorted(os.listdir(repo_root)):
+            if entry.startswith("."):
+                continue
+            candidate = os.path.join(repo_root, entry)
+            if not os.path.isdir(candidate):
+                continue
+            if entry in {"frontend", "__pycache__"}:
+                continue
+            if os.path.isdir(os.path.join(candidate, "dataresearch")):
+                discovered.append(os.path.join(candidate, "dataresearch"))
+                discovered.append(candidate)
+                continue
+            try:
+                file_count = len(glob.glob(os.path.join(candidate, "*.csv")))
+                file_count += len(glob.glob(os.path.join(candidate, "*.parquet")))
+            except OSError:
+                file_count = 0
+            if file_count > 0:
+                discovered.append(candidate)
+        return discovered
+
     env_value = os.environ.get("SENTINEL_DATA_DIRS", "").strip()
     if env_value:
-        return [path for path in env_value.split(os.pathsep) if path]
-    return [os.path.join(os.path.dirname(__file__), "data")]
+        explicit = [path for path in env_value.split(os.pathsep) if path]
+        if os.environ.get("SENTINEL_AUTO_REPO_DATA", "1") == "1":
+            explicit.extend(AUTO_DATA_DIR_CANDIDATES)
+            explicit.extend(discover_data_dirs())
+        return normalize_dirs(explicit)
+
+    default_dirs = ["data"]
+    if os.environ.get("SENTINEL_AUTO_REPO_DATA", "1") == "1":
+        default_dirs.extend(AUTO_DATA_DIR_CANDIDATES)
+        default_dirs.extend(discover_data_dirs())
+    return normalize_dirs(default_dirs)
 
 
 def determine_required_dataset_types() -> Tuple[str, ...]:
@@ -2722,6 +2903,144 @@ def choose_isolation_forest_benchmark(
     return artifact, train_metrics, val_metrics, summary
 
 
+def choose_knn_benchmark(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    train_family_ids: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    val_family_ids: np.ndarray,
+    lite_mode: bool,
+) -> Tuple[ModelArtifact, Dict[str, object], Dict[str, object], Dict[str, object]]:
+    X_train_balanced, y_train_balanced, _, rebalance_note = rebalance_training_data(
+        X_train, y_train, train_family_ids
+    )
+    if rebalance_note:
+        print(f"[*] {rebalance_note}")
+    scaled_train = scale_features(X_train_balanced)
+    scaled_val = scale_features(X_val)
+    params = {"n_neighbors": 15, "weights": "distance", "metric": "minkowski", "p": 2}
+    estimator = KNeighborsClassifier(**params)
+    estimator.fit(scaled_train, y_train_balanced)
+    artifact = ModelArtifact(
+        name="knn",
+        estimator=estimator,
+        score_mode="probability",
+        params=params,
+        training_note=rebalance_note,
+        exportable=False,
+    )
+    train_metrics = evaluate_model_artifact(artifact, scale_features(X_train), y_train)
+    val_metrics = evaluate_model_artifact(artifact, scaled_val, y_val)
+    val_family_metrics = evaluate_model_by_family_artifact(artifact, scaled_val, y_val, val_family_ids)
+    summary = build_selection_summary(
+        train_metrics,
+        val_metrics,
+        evaluate_model_by_family_artifact(artifact, scale_features(X_train), y_train, train_family_ids),
+        val_family_metrics,
+        {"params": params},
+    )
+    print(
+        f"    validation macro-F1={float(val_metrics['macro_f1']) * 100:.2f}%, "
+        f"balanced-acc={float(val_metrics['balanced_accuracy']) * 100:.2f}%"
+    )
+    return artifact, train_metrics, val_metrics, summary
+
+
+def choose_dt_benchmark(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    train_family_ids: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    val_family_ids: np.ndarray,
+    lite_mode: bool,
+) -> Tuple[ModelArtifact, Dict[str, object], Dict[str, object], Dict[str, object]]:
+    X_train_balanced, y_train_balanced, _, rebalance_note = rebalance_training_data(
+        X_train, y_train, train_family_ids
+    )
+    if rebalance_note:
+        print(f"[*] {rebalance_note}")
+    scaled_train = scale_features(X_train_balanced)
+    scaled_val = scale_features(X_val)
+    params = {
+        "max_depth": 12,
+        "min_samples_leaf": 4,
+        "min_samples_split": 8,
+        "class_weight": "balanced",
+        "random_state": RANDOM_STATE,
+    }
+    estimator = DecisionTreeClassifier(**params)
+    estimator.fit(scaled_train, y_train_balanced)
+    artifact = ModelArtifact(
+        name="decision_tree",
+        estimator=estimator,
+        score_mode="probability",
+        params=params,
+        training_note=rebalance_note,
+        exportable=False,
+    )
+    train_metrics = evaluate_model_artifact(artifact, scale_features(X_train), y_train)
+    val_metrics = evaluate_model_artifact(artifact, scaled_val, y_val)
+    val_family_metrics = evaluate_model_by_family_artifact(artifact, scaled_val, y_val, val_family_ids)
+    summary = build_selection_summary(
+        train_metrics,
+        val_metrics,
+        evaluate_model_by_family_artifact(artifact, scale_features(X_train), y_train, train_family_ids),
+        val_family_metrics,
+        {"params": params},
+    )
+    print(
+        f"    validation macro-F1={float(val_metrics['macro_f1']) * 100:.2f}%, "
+        f"balanced-acc={float(val_metrics['balanced_accuracy']) * 100:.2f}%"
+    )
+    return artifact, train_metrics, val_metrics, summary
+
+
+def fit_knn_artifact(
+    params: Dict[str, object],
+    X: np.ndarray,
+    y: np.ndarray,
+    family_ids: Optional[np.ndarray] = None,
+) -> Tuple[ModelArtifact, Optional[str]]:
+    X_balanced, y_balanced, _, rebalance_note = rebalance_training_data(X, y, family_ids)
+    model = KNeighborsClassifier(**{k: v for k, v in params.items() if k != "n_jobs"})
+    model.fit(scale_features(X_balanced), y_balanced)
+    return (
+        ModelArtifact(
+            name="knn",
+            estimator=model,
+            score_mode="probability",
+            params=dict(params),
+            training_note=rebalance_note,
+            exportable=False,
+        ),
+        rebalance_note,
+    )
+
+
+def fit_dt_artifact(
+    params: Dict[str, object],
+    X: np.ndarray,
+    y: np.ndarray,
+    family_ids: Optional[np.ndarray] = None,
+) -> Tuple[ModelArtifact, Optional[str]]:
+    X_balanced, y_balanced, _, rebalance_note = rebalance_training_data(X, y, family_ids)
+    model = DecisionTreeClassifier(**{k: v for k, v in params.items() if k != "n_jobs"})
+    model.fit(scale_features(X_balanced), y_balanced)
+    return (
+        ModelArtifact(
+            name="decision_tree",
+            estimator=model,
+            score_mode="probability",
+            params=dict(params),
+            training_note=rebalance_note,
+            exportable=False,
+        ),
+        rebalance_note,
+    )
+
+
 def fit_benchmark_artifact(
     model_name: str,
     params: Dict[str, object],
@@ -2735,6 +3054,10 @@ def fit_benchmark_artifact(
         return fit_xgboost_artifact(params, X, y, family_ids)
     if model_name == "isolation_forest":
         return fit_isolation_forest_artifact(params, X, y, family_ids, X, y, family_ids)
+    if model_name == "knn":
+        return fit_knn_artifact(params, X, y, family_ids)
+    if model_name == "decision_tree":
+        return fit_dt_artifact(params, X, y, family_ids)
     raise ValueError(f"Unsupported benchmark model: {model_name}")
 
 
@@ -2806,6 +3129,16 @@ def select_benchmark_models(
     print("[*] Selecting an IsolationForest configuration with validation gating...")
     selections.append(
         choose_isolation_forest_benchmark(X_train, y_train, train_family_ids, X_val, y_val, val_family_ids, lite_mode)
+    )
+
+    print("[*] Selecting a KNN configuration with validation gating...")
+    selections.append(
+        choose_knn_benchmark(X_train, y_train, train_family_ids, X_val, y_val, val_family_ids, lite_mode)
+    )
+
+    print("[*] Selecting a DecisionTree configuration with validation gating...")
+    selections.append(
+        choose_dt_benchmark(X_train, y_train, train_family_ids, X_val, y_val, val_family_ids, lite_mode)
     )
     return selections
 
@@ -3098,6 +3431,14 @@ def export_benchmark_report(
         "trainer_version": TRAINER_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "runtime_model": "random_forest",
+        "feature_schema": {
+            "runtime_feature_count": len(FEATURE_NAMES),
+            "runtime_feature_names": list(FEATURE_NAMES),
+            "runtime_feature_schema_hash": compute_feature_schema_hash(FEATURE_NAMES),
+            "shap_feature_count": len(SHAP_FEATURE_NAMES),
+            "shap_feature_names": list(SHAP_FEATURE_NAMES),
+            "shap_feature_schema_hash": compute_feature_schema_hash(SHAP_FEATURE_NAMES),
+        },
         "dataset_family_coverage": summarize_chunk_families(chunks),
         "split_plan": summarize_split_plan_for_export(split_plan),
         "models": [],
@@ -3149,6 +3490,22 @@ def export_benchmark_report(
             handle.write("\n")
         print(f"[*] Wrote benchmark report: {output_path}")
 
+    comparison_path = os.path.join(script_dir, BENCHMARK_ARTIFACT_DIRS[0], "model_comparison.csv")
+    os.makedirs(os.path.dirname(comparison_path), exist_ok=True)
+    with open(comparison_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["model", "accuracy", "macro_f1", "balanced_accuracy", "exported"])
+        for model_name, result in sorted(results.items()):
+            tm = result.test_metrics
+            writer.writerow([
+                model_name,
+                f"{float(tm['accuracy']):.6f}",
+                f"{float(tm['macro_f1']):.6f}",
+                f"{float(tm['balanced_accuracy']):.6f}",
+                "yes" if result.artifact.exportable else "no",
+            ])
+    print(f"[*] Wrote model comparison: {comparison_path}")
+
     explain_cfg = build_explainability_config(results, X_test, y_test)
     explain_paths = [
         os.path.join(script_dir, BENCHMARK_ARTIFACT_DIRS[0], EXPLAINABILITY_CONFIG_NAME),
@@ -3161,6 +3518,10 @@ def export_benchmark_report(
         print(f"[*] Wrote explainability config: {explain_path}")
 
 def export_model(clf: RandomForestClassifier) -> None:
+    if m2c is None:
+        print("[!] Skipping C export: m2cgen is not installed (pip install m2cgen).")
+        return
+
     code = m2c.export_to_c(clf)
 
     c_header = """/*
@@ -3249,7 +3610,13 @@ static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scr
         model_path = os.path.join(os.path.dirname(__file__), "benchmarks", "sentinel_model.joblib")
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         joblib.dump(
-            {"estimator": clf, "feature_names": FEATURE_NAMES, "scale": (ML_MINMAX_LOW, ML_MINMAX_HIGH)},
+            {
+                "estimator": clf,
+                "feature_names": FEATURE_NAMES,
+                "feature_schema_hash": compute_feature_schema_hash(FEATURE_NAMES),
+                "trainer_version": TRAINER_VERSION,
+                "scale": (ML_MINMAX_LOW, ML_MINMAX_HIGH),
+            },
             model_path,
         )
         print(f"[*] Saved model for SHAP/explain API: {model_path}")

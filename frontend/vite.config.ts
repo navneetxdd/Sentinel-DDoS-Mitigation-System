@@ -5,6 +5,12 @@ import { componentTagger } from "lovable-tagger";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  test: {
+    globals: true,
+    environment: "jsdom",
+    setupFiles: [path.resolve(__dirname, "src", "test", "setup.ts")],
+    include: ["src/**/*.test.{ts,tsx}"],
+  },
   server: {
     // "::" binds to all IPv4 and IPv6 interfaces — remove CORS pain in dev
     host: "::",

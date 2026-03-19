@@ -85,6 +85,7 @@ typedef struct sentinel_feature_vector {
     double   syn_ratio;             /* syn_count / packet_count */
     double   fin_ratio;
     double   rst_ratio;
+    double   sig_boost;             /* confidence boost from signature match (0.0 .. 1.0) */
 
     /* --- entropy features --- */
     double   src_port_entropy;      /* Shannon entropy of src ports in window */
@@ -177,6 +178,7 @@ typedef struct sentinel_threat_assessment {
     double   score_anomaly;         /* online anomaly component */
     double   score_chi_square;      /* chi-square source-concentration component */
     double   score_fanin;           /* distributed fan-in concentration score [0,1] */
+    double   score_signature;       /* signature-match component [0,1] */
     double   ml_reliability;        /* how much the runtime trusted the ML score */
 
     /* --- timing --- */

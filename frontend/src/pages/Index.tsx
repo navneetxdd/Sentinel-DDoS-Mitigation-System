@@ -7,6 +7,7 @@ import { TrafficChart } from "@/components/dashboard/TrafficChart";
 import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
 import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
+import { SLOPanel } from "@/components/dashboard/SLOPanel";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
 import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
 import {
@@ -34,10 +35,18 @@ const Index = () => {
   const distributedEvidence = Math.min(100, Math.round(faninScore * 100));
   const totalBlocked = ws.mitigationStatus?.total_blocked ?? 0;
   const totalRateLimited = ws.mitigationStatus?.total_rate_limited ?? 0;
+  const sdnStatus = ws.mitigationStatus?.sdn_connected;
   const mitigationActive = totalBlocked > 0 || totalRateLimited > 0;
   const cpuPercent = ws.metrics?.cpu_usage_percent ?? 0;
   const memMB = ws.metrics?.memory_usage_mb ?? 0;
   const mlOps = ws.metrics?.ml_classifications_per_sec ?? 0;
+  const integrationEnabledCount = [
+    ws.integrationStatus?.intel_feed_enabled,
+    ws.integrationStatus?.model_extension_enabled,
+    ws.integrationStatus?.controller_extension_enabled,
+    ws.integrationStatus?.signature_feed_enabled,
+    ws.integrationStatus?.dataplane_extension_enabled,
+  ].filter(Boolean).length;
 
   const getStatus = (): StatusType => {
     if (riskScore >= 70) return "attack";
@@ -119,6 +128,8 @@ const Index = () => {
           />
         </GridLayout>
 
+        <SLOPanel />
+
         {/* Main Monitoring Section - 3 Columns (Chart + Gauge + AI) */}
         <GridLayout cols={3} gap="lg">
           <Panel title="Traffic Trends" variant="default">
@@ -127,8 +138,8 @@ const Index = () => {
           <Panel title="Risk Assessment" variant={riskScore >= 70 ? "highlight" : "default"}>
             <RiskGauge value={riskScore} />
           </Panel>
-          <div>
-            <AIAnalystWidget telemetry={aiTelemetry} />
+          <div className="h-full">
+            <AIAnalystWidget telemetry={aiTelemetry} className="h-full min-h-[420px]" />
           </div>
         </GridLayout>
 
@@ -199,6 +210,20 @@ const Index = () => {
               unit={benchmarks.report ? `${(benchmarks.report.accuracy * 100).toFixed(1)}%` : ""}
               icon={<Server className="w-5 h-5" />}
               variant="success"
+            />
+            <StatCard
+              label="SDN Controller"
+              value={sdnStatus === 1 ? "Connected" : sdnStatus === 0 ? "Unreachable" : "Unknown"}
+              unit={ws.mitigationStatus?.sdn_last_error ? "check controller" : "control plane"}
+              icon={<Shield className="w-5 h-5" />}
+              variant={sdnStatus === 1 ? "success" : sdnStatus === 0 ? "danger" : "warning"}
+            />
+            <StatCard
+              label="External Integrations"
+              value={integrationEnabledCount}
+              unit={ws.integrationStatus?.profile ?? "baseline"}
+              icon={<Layers className="w-5 h-5" />}
+              variant={integrationEnabledCount > 0 ? "warning" : "default"}
             />
           </GridLayout>
         </div>

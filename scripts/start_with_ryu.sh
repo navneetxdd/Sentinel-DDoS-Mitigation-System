@@ -9,12 +9,22 @@
 
 set -e
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "${ROOT_DIR}/scripts/load_profile.sh" ]; then
+    # shellcheck disable=SC1091
+    . "${ROOT_DIR}/scripts/load_profile.sh"
+    sentinel_load_profile "${ROOT_DIR}" || true
+fi
+
+cd "${ROOT_DIR}"
+
 if [ "$EUID" -ne 0 ]; then
     echo "Please run as root (sudo $0)"
     exit 1
 fi
 
 echo "=== Starting Sentinel DDoS Core ==="
+echo "Profile: ${SENTINEL_INTEGRATION_PROFILE:-baseline}"
 
 # Check if Ryu is running
 echo "[1] Checking controller availability..."

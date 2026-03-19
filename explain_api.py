@@ -24,6 +24,7 @@ Endpoints:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -73,6 +74,11 @@ FEATURE_NAMES = [
     "chi_square_score",
 ]
 
+
+def compute_feature_schema_hash(feature_names: List[str]) -> str:
+    normalized = "|".join(str(name).strip().lower() for name in feature_names)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
 # NOTE: These scaling constants MUST match the MinMax ranges used in train_ml.py.
 # If train_ml.py is updated, update these values accordingly.
 ML_MINMAX_LOW = np.zeros(NUM_FEATURES, dtype=np.float64)
@@ -88,9 +94,12 @@ ML_MINMAX_RANGE = ML_MINMAX_HIGH - ML_MINMAX_LOW
 
 
 def scale_features(X: np.ndarray) -> np.ndarray:
+    feature_count = int(X.shape[1])
+    low = ML_MINMAX_LOW[:feature_count]
+    rng = ML_MINMAX_RANGE[:feature_count]
     scaled = np.asarray(X, dtype=np.float64).copy()
-    np.subtract(scaled, ML_MINMAX_LOW, out=scaled)
-    np.divide(scaled, ML_MINMAX_RANGE, out=scaled, where=ML_MINMAX_RANGE > 0)
+    np.subtract(scaled, low, out=scaled)
+    np.divide(scaled, rng, out=scaled, where=rng > 0)
     np.clip(scaled, 0.0, 1.0, out=scaled)
     return scaled
 
@@ -103,9 +112,14 @@ class ExplainHandler(BaseHTTPRequestHandler):
     _cors_origin: str = "http://localhost:5173"
     _db_path: str = ""
     _db_lock: Lock = Lock()
+    _api_key: str = ""
     _require_proxy_auth: bool = False
     _trusted_proxy_ips: set[str] = {"127.0.0.1", "::1"}
     _login_url: str = "/oauth2/start"
+    _feature_names: List[str] = FEATURE_NAMES
+    _feature_schema_hash: str = compute_feature_schema_hash(FEATURE_NAMES)
+    _feature_count: int = NUM_FEATURES
+    _trainer_version: str = "unknown"
 
     def log_message(self, format: str, *args: Any) -> None:
         sys.stderr.write(f"[explain_api] {args[0]}\n")
@@ -145,7 +159,18 @@ class ExplainHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
             loaded = ExplainHandler.model is not None and ExplainHandler._explainer is not None
-            self._json_response(200, {"status": "ok", "model_loaded": loaded, "shap_available": shap is not None})
+            self._json_response(
+                200,
+                {
+                    "status": "ok",
+                    "model_loaded": loaded,
+                    "shap_available": shap is not None,
+                    "feature_count": ExplainHandler._feature_count,
+                    "feature_schema_hash": ExplainHandler._feature_schema_hash,
+                    "feature_names": ExplainHandler._feature_names,
+                    "trainer_version": ExplainHandler._trainer_version,
+                },
+            )
             return
         if parsed.path == "/session":
             self._json_response(200, self._build_session_payload())
@@ -207,6 +232,30 @@ class ExplainHandler(BaseHTTPRequestHandler):
             self._json_response(400, {"error": "Expected non-empty 'samples' array of 21-feature vectors"})
             return
 
+        request_schema_hash = str(body.get("feature_schema_hash") or "").strip()
+        if request_schema_hash and request_schema_hash != ExplainHandler._feature_schema_hash:
+            self._json_response(
+                409,
+                {
+                    "error": "feature schema hash mismatch",
+                    "expected_feature_schema_hash": ExplainHandler._feature_schema_hash,
+                    "got_feature_schema_hash": request_schema_hash,
+                },
+            )
+            return
+
+        request_feature_count = body.get("feature_count")
+        if isinstance(request_feature_count, int) and request_feature_count != ExplainHandler._feature_count:
+            self._json_response(
+                409,
+                {
+                    "error": "feature count mismatch",
+                    "expected_feature_count": ExplainHandler._feature_count,
+                    "got_feature_count": request_feature_count,
+                },
+            )
+            return
+
         # Cap to 512 samples per request — prevents CPU/memory DoS via SHAP.
         MAX_SAMPLES = 512
         if len(samples) > MAX_SAMPLES:
@@ -224,14 +273,25 @@ class ExplainHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Backward compatibility: accept legacy 20-feature vectors and append
-        # chi_square_score=0.0 when upstream telemetry has not been upgraded yet.
-        if X.shape[1] == NUM_FEATURES - 1:
+        # Compatibility: adapt between 20/21 features while enforcing model schema.
+        expected_feature_count = ExplainHandler._feature_count
+        if X.shape[1] == expected_feature_count:
+            pass
+        elif X.shape[1] == expected_feature_count - 1:
             X = np.pad(X, ((0, 0), (0, 1)), mode="constant", constant_values=0.0)
-        elif X.shape[1] != NUM_FEATURES:
+        elif X.shape[1] == expected_feature_count + 1:
+            X = X[:, :expected_feature_count]
+        elif expected_feature_count == NUM_FEATURES and X.shape[1] == NUM_FEATURES - 1:
+            X = np.pad(X, ((0, 0), (0, 1)), mode="constant", constant_values=0.0)
+        elif expected_feature_count == NUM_FEATURES - 1 and X.shape[1] == NUM_FEATURES:
+            X = X[:, :expected_feature_count]
+        else:
             self._json_response(
                 400,
-                {"error": f"Each sample must have {NUM_FEATURES} features (or legacy {NUM_FEATURES - 1})", "got": X.shape},
+                {
+                    "error": f"Each sample must have {expected_feature_count} features (or nearby compatible shape)",
+                    "got": X.shape,
+                },
             )
             return
 
@@ -246,14 +306,15 @@ class ExplainHandler(BaseHTTPRequestHandler):
         if isinstance(shap_values, list):
             shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
 
+        feature_names = ExplainHandler._feature_names[: X_scaled.shape[1]]
         contributions: List[List[Dict[str, Any]]] = []
         for i in range(len(X_scaled)):
             row: List[Dict[str, Any]] = []
-            for j in range(NUM_FEATURES):
+            for j in range(len(feature_names)):
                 raw_val = float(shap_values[i, j]) if shap_values.ndim >= 2 else float(shap_values[i])
                 # Guard against NaN/Inf which would break JSON serialization
                 val = 0.0 if math.isnan(raw_val) or math.isinf(raw_val) else raw_val
-                row.append({"name": FEATURE_NAMES[j], "value": val})
+                row.append({"name": feature_names[j], "value": val})
             contributions.append(row)
 
         self._json_response(
@@ -262,6 +323,8 @@ class ExplainHandler(BaseHTTPRequestHandler):
                 "contributions": contributions,
                 "base_value": ExplainHandler._base_value,
                 "num_samples": len(samples),
+                "feature_schema_hash": ExplainHandler._feature_schema_hash,
+                "feature_count": ExplainHandler._feature_count,
             },
         )
 
@@ -333,6 +396,21 @@ class ExplainHandler(BaseHTTPRequestHandler):
         }
 
     def _ensure_authenticated_session(self) -> bool:
+        # 1. Check for Sentinel API Key in headers (Mandatory if configured)
+        if ExplainHandler._api_key:
+            provided_key = self.headers.get("X-Sentinel-API-Key", "").strip()
+            if not provided_key:
+                # Fallback: check query parameters for browser-initiated GETs if needed
+                parsed = urlparse(self.path)
+                qs = parse_qs(parsed.query)
+                provided_key = qs.get("api_key", [""])[0]
+
+            if provided_key != ExplainHandler._api_key:
+                self.log_message("[AUTH] Request failed: invalid or missing X-Sentinel-API-Key")
+                self._json_response(401, {"error": "Unauthorized: Invalid X-Sentinel-API-Key required."})
+                return False
+
+        # 2. Check for Proxy Auth if enabled
         session = self._build_session_payload()
         if session.get("authenticated"):
             return True
@@ -461,11 +539,11 @@ class ExplainHandler(BaseHTTPRequestHandler):
             self._json_response(400, {"error": "Invalid JSON body"})
             return
 
-        api_key = os.environ.get("GEMINI_API_KEY", "")
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not api_key:
             self._json_response(
-                200,
-                {"analysis": "Gemini API key not configured. Set GEMINI_API_KEY environment variable."},
+                503,
+                {"error": "Gemini API key not configured. Set GEMINI_API_KEY environment variable for /analyze."},
             )
             return
 
@@ -532,6 +610,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ExplainHandler._cors_origin = args.cors_origin
+    ExplainHandler._api_key = os.environ.get("SENTINEL_WS_API_KEY", "").strip()
     ExplainHandler._require_proxy_auth = os.environ.get("SENTINEL_REQUIRE_PROXY_AUTH", "0") in {"1", "true", "TRUE", "yes", "YES"}
     ExplainHandler._trusted_proxy_ips = {
         ip.strip() for ip in os.environ.get("SENTINEL_TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if ip.strip()
@@ -545,6 +624,24 @@ def main() -> None:
         try:
             ExplainHandler.model = joblib.load(model_path)
             print(f"[*] Loaded model from {model_path}")
+            if isinstance(ExplainHandler.model, dict):
+                feature_names = ExplainHandler.model.get("feature_names")
+                if isinstance(feature_names, list) and feature_names:
+                    ExplainHandler._feature_names = [str(name) for name in feature_names]
+                    ExplainHandler._feature_count = len(ExplainHandler._feature_names)
+                else:
+                    ExplainHandler._feature_names = list(FEATURE_NAMES)
+                    ExplainHandler._feature_count = len(ExplainHandler._feature_names)
+
+                metadata_hash = ExplainHandler.model.get("feature_schema_hash")
+                if isinstance(metadata_hash, str) and metadata_hash.strip():
+                    ExplainHandler._feature_schema_hash = metadata_hash.strip()
+                else:
+                    ExplainHandler._feature_schema_hash = compute_feature_schema_hash(ExplainHandler._feature_names)
+
+                trainer_version = ExplainHandler.model.get("trainer_version")
+                if isinstance(trainer_version, str) and trainer_version.strip():
+                    ExplainHandler._trainer_version = trainer_version.strip()
         except Exception as e:
             print(f"[!] Failed to load model: {e}", file=sys.stderr)
     else:
@@ -569,6 +666,9 @@ def main() -> None:
 
     db_path = os.path.join(script_dir, "sentinel_events.db")
     ExplainHandler._init_db(db_path)
+
+    if (args.host == "0.0.0.0" and not ExplainHandler._api_key and not ExplainHandler._require_proxy_auth):
+        print("[!] WARNING: Listening on 0.0.0.0 with no API key and no proxy auth. Do not expose to the internet.")
 
     server = ThreadingHTTPServer((args.host, args.port), ExplainHandler)
     print(f"[*] Explain API listening on http://{args.host}:{args.port}")

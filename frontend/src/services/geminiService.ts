@@ -34,9 +34,13 @@ const getBackoffDelay = (attemptNumber: number): number => {
 
 /**
  * Core analysis call with built-in retry and error resilience
- * NEVER fails - returns meaningful fallback on all errors
+ * NEVER fails - returns meaningful fallback on all errors.
+ * Pass optional abortSignal (e.g. from component cleanup) to cancel in-flight request.
  */
-export const analyzeThreat = async (data: ThreatTelemetry): Promise<string> => {
+export const analyzeThreat = async (
+  data: ThreatTelemetry,
+  abortSignal?: AbortSignal,
+): Promise<string> => {
   const isThreat = data.threatScore > 0.5;
 
   // Default fallback for analysis unavailability (graceful degradation)
@@ -50,6 +54,16 @@ export const analyzeThreat = async (data: ThreatTelemetry): Promise<string> => {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), ANALYZE_TIMEOUT_MS);
+      if (abortSignal?.aborted) {
+        clearTimeout(timeoutId);
+        return defaultFallback;
+      }
+      if (abortSignal) {
+        abortSignal.addEventListener("abort", () => {
+          clearTimeout(timeoutId);
+          controller.abort();
+        });
+      }
 
       try {
         const res = await fetchExplainApi("/analyze", {

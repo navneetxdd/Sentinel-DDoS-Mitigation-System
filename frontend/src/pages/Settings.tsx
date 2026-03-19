@@ -30,6 +30,7 @@ type SettingsState = {
   connectionThreshold: number;
   packetRateThreshold: number;
   entropyThreshold: number;
+  contributorThreshold: number;
   riskScoreThreshold: number;
   autoBlock: boolean;
   autoRateLimit: boolean;
@@ -48,6 +49,9 @@ type SettingsState = {
   notifyOnThreshold: boolean;
   emailAddress: string;
   webhookUrl: string;
+  alertWebhookUrl: string;
+  alertWebhookSecret: string;
+  externalFirewallApiUrl: string;
   alertCooldown: string;
   logRetention: string;
   analysisInterval: string;
@@ -61,6 +65,7 @@ const DEFAULT_SETTINGS: SettingsState = {
   connectionThreshold: 5000,
   packetRateThreshold: 50000,
   entropyThreshold: 75,
+  contributorThreshold: 0,
   riskScoreThreshold: 70,
   autoBlock: true,
   autoRateLimit: true,
@@ -80,6 +85,9 @@ const DEFAULT_SETTINGS: SettingsState = {
   notifyOnThreshold: false,
   emailAddress: "",
   webhookUrl: "",
+  alertWebhookUrl: "",
+  alertWebhookSecret: "",
+  externalFirewallApiUrl: "",
   alertCooldown: "5",
   logRetention: "30",
   analysisInterval: "1",
@@ -132,6 +140,7 @@ const Settings = () => {
   const [connectionThreshold, setConnectionThreshold] = useState(initialSettings.connectionThreshold);
   const [packetRateThreshold, setPacketRateThreshold] = useState(initialSettings.packetRateThreshold);
   const [entropyThreshold, setEntropyThreshold] = useState(initialSettings.entropyThreshold);
+  const [contributorThreshold, setContributorThreshold] = useState(initialSettings.contributorThreshold);
   const [riskScoreThreshold, setRiskScoreThreshold] = useState(initialSettings.riskScoreThreshold);
 
   const [autoBlock, setAutoBlock] = useState(initialSettings.autoBlock);
@@ -153,6 +162,9 @@ const Settings = () => {
   const [notifyOnThreshold, setNotifyOnThreshold] = useState(initialSettings.notifyOnThreshold);
   const [emailAddress, setEmailAddress] = useState(initialSettings.emailAddress);
   const [webhookUrl, setWebhookUrl] = useState(initialSettings.webhookUrl);
+  const [alertWebhookUrl, setAlertWebhookUrl] = useState(initialSettings.alertWebhookUrl);
+  const [alertWebhookSecret, setAlertWebhookSecret] = useState(initialSettings.alertWebhookSecret);
+  const [externalFirewallApiUrl, setExternalFirewallApiUrl] = useState(initialSettings.externalFirewallApiUrl);
   const [alertCooldown, setAlertCooldown] = useState(initialSettings.alertCooldown);
 
   const [logRetention, setLogRetention] = useState(initialSettings.logRetention);
@@ -185,6 +197,7 @@ const Settings = () => {
     connectionThreshold,
     packetRateThreshold,
     entropyThreshold,
+    contributorThreshold,
     riskScoreThreshold,
     autoBlock,
     autoRateLimit,
@@ -203,17 +216,30 @@ const Settings = () => {
     notifyOnThreshold,
     emailAddress,
     webhookUrl,
+    alertWebhookUrl,
+    alertWebhookSecret,
+    externalFirewallApiUrl,
     alertCooldown,
     logRetention,
     analysisInterval,
     modelFocus,
   };
 
+  const integrationFlags = [
+    { label: "Intel Feed", enabled: ws.integrationStatus?.intel_feed_enabled ?? false },
+    { label: "Model Extension", enabled: ws.integrationStatus?.model_extension_enabled ?? false },
+    { label: "Controller Extension", enabled: ws.integrationStatus?.controller_extension_enabled ?? false },
+    { label: "Signature Feed", enabled: ws.integrationStatus?.signature_feed_enabled ?? false },
+    { label: "Dataplane Extension", enabled: ws.integrationStatus?.dataplane_extension_enabled ?? false },
+    { label: "Gatekeeper Sidecar", enabled: ws.integrationStatus?.gatekeeper_enabled ?? false },
+  ];
+
   const applySettings = (settings: SettingsState) => {
     setSynRateThreshold(settings.synRateThreshold);
     setConnectionThreshold(settings.connectionThreshold);
     setPacketRateThreshold(settings.packetRateThreshold);
     setEntropyThreshold(settings.entropyThreshold);
+    setContributorThreshold(settings.contributorThreshold);
     setRiskScoreThreshold(settings.riskScoreThreshold);
     setAutoBlock(settings.autoBlock);
     setAutoRateLimit(settings.autoRateLimit);
@@ -232,6 +258,9 @@ const Settings = () => {
     setNotifyOnThreshold(settings.notifyOnThreshold);
     setEmailAddress(settings.emailAddress);
     setWebhookUrl(settings.webhookUrl);
+    setAlertWebhookUrl(settings.alertWebhookUrl);
+    setAlertWebhookSecret(settings.alertWebhookSecret);
+    setExternalFirewallApiUrl(settings.externalFirewallApiUrl);
     setAlertCooldown(settings.alertCooldown);
     setLogRetention(settings.logRetention);
     setAnalysisInterval(settings.analysisInterval);
@@ -264,6 +293,7 @@ const Settings = () => {
       ws.sendCommand("set_conn_threshold", { value: String(connectionThreshold) });
       ws.sendCommand("set_pps_threshold", { value: String(packetRateThreshold) });
       ws.sendCommand("set_entropy_threshold", { value: String(entropyThreshold) });
+      ws.sendCommand("set_contributor_threshold", { value: String(contributorThreshold) });
       const mitigationOn = autoBlock || autoRateLimit;
       if (mitigationOn) {
         ws.sendCommand("enable_auto_mitigation");
@@ -327,12 +357,69 @@ const Settings = () => {
               Save Changes
             </Button>
           </div>
+          {ws.lastCommandResult?.success && /^(set_|enable_auto_mitigation|disable_auto_mitigation)/.test(ws.lastCommandResult?.command ?? "") ? (
+            <p className="text-xs text-muted-foreground">
+              Last synced: <span className="font-medium text-foreground/80">{ws.lastCommandResult?.command ?? "—"}</span>
+              {" "}
+              at {new Date(ws.lastCommandResult.timestamp * 1000).toLocaleTimeString()}
+            </p>
+          ) : null}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <SettingsCard
+            title="Integration Readiness"
+            description="Backend integration flags detected from runtime telemetry"
+            icon={Database}
+            className="lg:col-span-2"
+          >
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <span className="text-sm text-muted-foreground">Profile:</span>
+              <span className="px-2 py-1 rounded bg-secondary text-sm font-mono">
+                {ws.integrationStatus?.profile ?? "baseline"}
+              </span>
+              <span className="text-sm text-muted-foreground">
+                {integrationFlags.filter((flag) => flag.enabled).length} / {integrationFlags.length} enabled
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
+              {integrationFlags.map((flag) => (
+                <div
+                  key={flag.label}
+                  className="rounded border border-border px-3 py-2 flex items-center justify-between"
+                >
+                  <span className="text-xs text-muted-foreground">{flag.label}</span>
+                  <span className={flag.enabled ? "text-status-success text-xs font-semibold" : "text-status-warning text-xs font-semibold"}>
+                    {flag.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              If an integration shows Disabled or Unreachable, enable it via your deployment environment (e.g. SENTINEL_ENABLE_* flags) or ensure the backing service is running.
+            </p>
+            <p className="text-xs text-muted-foreground mt-2">
+              Flow collection: pipeline sends metrics every 1s and top sources every 5s. Adjust in pipeline config if needed.
+            </p>
+            {ws.integrationStatus?.gatekeeper_enabled ? (
+              <p className="text-xs text-muted-foreground mt-3">
+                Gatekeeper health: {ws.integrationStatus?.gatekeeper_connected === 1 ? "Connected" : ws.integrationStatus?.gatekeeper_connected === 0 ? "Unreachable" : "Unknown"}
+                {ws.integrationStatus?.gatekeeper_connected === 0 && ws.integrationStatus?.gatekeeper_last_error
+                  ? ` (${ws.integrationStatus.gatekeeper_last_error})`
+                  : ""}
+                {typeof ws.integrationStatus?.gatekeeper_failure_count === "number" && typeof ws.integrationStatus?.gatekeeper_failure_threshold === "number"
+                  ? ` | Failures: ${ws.integrationStatus.gatekeeper_failure_count}/${ws.integrationStatus.gatekeeper_failure_threshold}`
+                  : ""}
+                {ws.integrationStatus?.gatekeeper_circuit_open
+                  ? ` | Circuit open${ws.integrationStatus.gatekeeper_next_retry_sec ? ` (retry in ${ws.integrationStatus.gatekeeper_next_retry_sec}s)` : ""}`
+                  : ""}
+              </p>
+            ) : null}
+          </SettingsCard>
+
+          <SettingsCard
             title="Detection Thresholds"
-            description="Configure sensitivity for attack detection"
+            description="Configure sensitivity for attack detection. Click Save to push these values to the pipeline; until then the backend keeps its current or default thresholds."
             icon={Gauge}
           >
             <SliderSetting
@@ -377,14 +464,24 @@ const Settings = () => {
               variant="warning"
             />
             <SliderSetting
-              label="Risk Score Threshold"
-              description="Score that triggers automatic mitigation"
+              label="Contributor Threshold (%)"
+              description="Only consider IPs that contribute at least this % of top-source traffic for Block top contributors. 0 = disabled."
+              value={contributorThreshold}
+              onChange={setContributorThreshold}
+              min={0}
+              max={100}
+              step={5}
+              unit="%"
+            />
+            <SliderSetting
+              label="Risk Score Threshold (display)"
+              description="Alert/display threshold only; mitigation thresholds are set via the pipeline. Use this to control when the UI shows high-risk state."
               value={riskScoreThreshold}
               onChange={setRiskScoreThreshold}
               min={0}
               max={100}
               step={5}
-              unit=""
+              unit="%"
               variant="danger"
             />
           </SettingsCard>
@@ -394,6 +491,9 @@ const Settings = () => {
             description="Configure automatic response actions"
             icon={Shield}
           >
+            <p className="text-xs text-muted-foreground mb-4">
+              Block duration and rate limit window are stored locally; the pipeline uses its own timeouts. Use the thresholds above and Auto-Block / Auto Rate Limiting (synced on Save) to control backend behavior.
+            </p>
             <ToggleSetting
               label="Auto-Block Malicious IPs"
               description="Persisted UI preference for aggressive response posture"
@@ -516,11 +616,14 @@ const Settings = () => {
             icon={Bell}
             className="lg:col-span-2"
           >
+            <p className="text-xs text-muted-foreground mb-4">
+              Email, SMS, and the generic Webhook URL below are stored as preferences only; no outbound sending is implemented. Use <strong>Mitigation alert webhook</strong> for real POSTs on block or mitigation events (from Mitigation Control).
+            </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-4">
-                <h4 className="font-medium text-sm flex items-center gap-2">
+                <h4 className="font-medium text-sm flex items-center gap-2 text-muted-foreground">
                   <Mail className="w-4 h-4 text-primary" />
-                  Email Notifications
+                  Email (preference only)
                 </h4>
                 <ToggleSetting
                   label="Enable Email Alerts"
@@ -542,9 +645,9 @@ const Settings = () => {
                   </div>
                 )}
 
-                <h4 className="font-medium text-sm flex items-center gap-2 pt-4">
+                <h4 className="font-medium text-sm flex items-center gap-2 pt-4 text-muted-foreground">
                   <Smartphone className="w-4 h-4 text-primary" />
-                  SMS Notifications
+                  SMS (preference only)
                 </h4>
                 <ToggleSetting
                   label="Enable SMS Alerts"
@@ -554,13 +657,13 @@ const Settings = () => {
                   variant="success"
                 />
 
-                <h4 className="font-medium text-sm flex items-center gap-2 pt-4">
+                <h4 className="font-medium text-sm flex items-center gap-2 pt-4 text-muted-foreground">
                   <Globe className="w-4 h-4 text-primary" />
-                  Webhook Notifications
+                  Webhook URL (preference only)
                 </h4>
                 <ToggleSetting
                   label="Enable Webhook Alerts"
-                  description="Send alerts to external services (Slack, Discord, etc.)"
+                  description="Store a webhook URL for future use; not wired to sending. Use Mitigation alert webhook below for live POSTs."
                   checked={webhookNotifications}
                   onCheckedChange={setWebhookNotifications}
                   variant="success"
@@ -577,6 +680,46 @@ const Settings = () => {
                     />
                   </div>
                 )}
+
+                <h4 className="font-medium text-sm flex items-center gap-2 pt-4">
+                  <Bell className="w-4 h-4 text-primary" />
+                  Mitigation alert webhook (active)
+                </h4>
+                <p className="text-xs text-muted-foreground">POSTs attack/mitigation events (on block or Block All Flagged) to this URL when configured.</p>
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">Alert webhook URL</label>
+                  <Input
+                    type="url"
+                    value={alertWebhookUrl}
+                    onChange={(e) => setAlertWebhookUrl(e.target.value)}
+                    placeholder="https://your-server.com/alerts"
+                    className="bg-secondary border-border font-mono text-xs"
+                  />
+                  <label className="text-xs text-muted-foreground">Secret (optional, for signing or auth header)</label>
+                  <Input
+                    type="password"
+                    value={alertWebhookSecret}
+                    onChange={(e) => setAlertWebhookSecret(e.target.value)}
+                    placeholder="Optional secret"
+                    className="bg-secondary border-border font-mono text-xs"
+                  />
+                </div>
+
+                <h4 className="font-medium text-sm flex items-center gap-2 pt-4">
+                  <Globe className="w-4 h-4 text-primary" />
+                  External firewall API (active)
+                </h4>
+                <p className="text-xs text-muted-foreground">Push blocked IPs to this API from Mitigation Control when you click &quot;Push blocked IPs to external API&quot;.</p>
+                <div className="space-y-2">
+                  <label className="text-xs text-muted-foreground">API URL</label>
+                  <Input
+                    type="url"
+                    value={externalFirewallApiUrl}
+                    onChange={(e) => setExternalFirewallApiUrl(e.target.value)}
+                    placeholder="https://api.example.com/firewall/block"
+                    className="bg-secondary border-border font-mono text-xs"
+                  />
+                </div>
               </div>
 
               <div className="space-y-4">
@@ -626,6 +769,9 @@ const Settings = () => {
             icon={Database}
             className="lg:col-span-2"
           >
+            <p className="text-xs text-muted-foreground mb-4">
+              Log retention, analysis interval, and model version are stored locally; the pipeline uses its own intervals. Model version affects which benchmark is shown in the UI.
+            </p>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="space-y-4">
                 <SelectSetting

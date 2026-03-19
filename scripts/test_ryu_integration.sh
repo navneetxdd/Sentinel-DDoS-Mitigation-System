@@ -9,6 +9,13 @@
 
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "${ROOT_DIR}/scripts/load_profile.sh" ]; then
+    # shellcheck disable=SC1091
+    . "${ROOT_DIR}/scripts/load_profile.sh"
+    sentinel_load_profile "${ROOT_DIR}" || true
+fi
+
 RYU_URL="${RYU_URL:-http://127.0.0.1:8080}"
 DPID=1
 CURL_OPTS=(--silent --show-error --fail --max-time 5 --connect-timeout 2)
@@ -18,6 +25,7 @@ curl_json() {
 }
 
 echo "=== Sentinel DDoS Core - Ryu Integration Test ==="
+echo "Profile: ${SENTINEL_INTEGRATION_PROFILE:-baseline}"
 echo ""
 
 # Test 1: Health check

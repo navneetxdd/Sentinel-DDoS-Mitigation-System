@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, AlertTriangle, Bot, ShieldCheck } from "lucide-react";
 import { ThreatTelemetry, analyzeThreat } from "@/services/geminiService";
+import { cn } from "@/lib/utils";
 
 interface AIAnalystWidgetProps {
   telemetry: ThreatTelemetry;
+  className?: string;
 }
 
 const ANALYSIS_INTERVAL_MS = 20000;
 
-export const AIAnalystWidget = ({ telemetry }: AIAnalystWidgetProps) => {
+export const AIAnalystWidget = ({ telemetry, className }: AIAnalystWidgetProps) => {
   const [analysis, setAnalysis] = useState<string>("Waiting for telemetry...");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
@@ -22,6 +24,7 @@ export const AIAnalystWidget = ({ telemetry }: AIAnalystWidgetProps) => {
 
   useEffect(() => {
     let isMounted = true;
+    const abortController = new AbortController();
 
     const runAnalysis = async () => {
       if (inFlightRef.current) {
@@ -34,7 +37,7 @@ export const AIAnalystWidget = ({ telemetry }: AIAnalystWidgetProps) => {
       }
 
       try {
-        const result = await analyzeThreat(telemetryRef.current);
+        const result = await analyzeThreat(telemetryRef.current, abortController.signal);
         if (isMounted) {
           setAnalysis(result);
         }
@@ -53,6 +56,7 @@ export const AIAnalystWidget = ({ telemetry }: AIAnalystWidgetProps) => {
 
     return () => {
       isMounted = false;
+      abortController.abort();
       clearInterval(intervalId);
     };
   }, []);
@@ -64,7 +68,7 @@ export const AIAnalystWidget = ({ telemetry }: AIAnalystWidgetProps) => {
   }, [analysis]);
 
   return (
-    <div className="cyber-card glow-border p-5 rounded-lg flex flex-col h-[300px]">
+    <div className={cn("cyber-card glow-border p-5 rounded-lg flex flex-col min-h-[320px] h-full", className)}>
       <div className="flex items-center gap-3 mb-4 pb-3 border-b border-border">
         <div className={`p-2 rounded-md ${telemetry.threatScore > 0.5 ? "bg-status-danger/15 text-status-danger" : "bg-secondary text-foreground"}`}>
           <Bot className="w-5 h-5" />

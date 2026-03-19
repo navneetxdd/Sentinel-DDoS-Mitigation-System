@@ -70,6 +70,13 @@ const DecisionEngine = () => {
   return (
     <DashboardLayout connected={ws.connected}>
       <div className="space-y-6 animate-fade-in">
+        {(simulatingDDoS || simulatingFlashCrowd) && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2 flex items-center gap-2">
+            <Zap className="w-4 h-4 text-amber-500" />
+            <span className="text-sm font-medium text-amber-700 dark:text-amber-400">Simulation active</span>
+            <span className="text-xs text-muted-foreground">Toggle off above to stop simulated activity.</span>
+          </div>
+        )}
         <PageHeader
           title="Decision Engine"
           description="ML-powered threat classification and explainability"
@@ -120,8 +127,8 @@ const DecisionEngine = () => {
             <div className="md:col-span-2 lg:col-span-2">
               <ExplanationBox isAttack={isDDoS} isFlashCrowd={isFlashCrowd} featureImportance={fi} />
             </div>
-            <div>
-              <AIAnalystWidget telemetry={aiTelemetry} />
+            <div className="h-full">
+              <AIAnalystWidget telemetry={aiTelemetry} className="h-full min-h-[420px]" />
             </div>
           </GridLayout>
         </Panel>

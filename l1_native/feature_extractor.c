@@ -87,6 +87,7 @@ typedef struct flow_entry {
 
     /* last threat score from decision engine (for eviction priority) */
     double   threat_score;
+    double   sig_boost;      /* max signature boost seen for this flow in window */
 
     /* TCP flag counters */
     uint32_t syn_count;
@@ -817,6 +818,7 @@ int fe_ingest_packet(fe_context_t *ctx, const fe_packet_t *pkt)
     /* trim ring */
     uint64_t window_ns = (uint64_t)ctx->cfg.window_sec * NS_PER_SEC;
     f->last_timestamp_ns = pkt->timestamp_ns;
+    if (pkt->sig_boost > f->sig_boost) f->sig_boost = pkt->sig_boost;
     trim_ring(ctx, f, window_ns);
 
     /* push into ring (slab-indexed by ring_slot) */
@@ -1032,6 +1034,7 @@ int fe_extract_flow(fe_context_t *ctx,
     out->src_port = key->src_port;
     out->dst_port = key->dst_port;
     out->protocol = key->protocol;
+    out->sig_boost = f->sig_boost;
 
     /* timing */
     if (n > 0) {

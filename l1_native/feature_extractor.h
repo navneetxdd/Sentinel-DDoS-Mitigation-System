@@ -71,6 +71,7 @@ typedef struct fe_packet {
     uint8_t  ttl;
     uint8_t  tcp_flags;        /* raw TCP flags byte (SYN=0x02 etc.) */
     uint32_t hw_hash;          /* Reserved; core uses software FNV-1a only (hash parity). */
+    double   sig_boost;        /* threat boost from signature match (0.0 .. 1.0) */
     const uint8_t *payload;    /* first N bytes, may be NULL */
 } fe_packet_t;
 

@@ -6,7 +6,7 @@
 CC       ?= gcc
 CFLAGS   := -Wall -Wextra -Werror -O3 -march=native -std=c11 -I. -I./sentinel_core -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 LDFLAGS  :=
-LDLIBS   := -lm -lcurl -lpthread -lssl -lcrypto
+LDLIBS   := -lm -lcurl -lpthread -lssl -lcrypto -latomic
 
 PREFIX   ?= /usr/local
 

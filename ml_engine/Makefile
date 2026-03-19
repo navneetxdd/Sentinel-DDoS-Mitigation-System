@@ -5,7 +5,7 @@ AR       ?= ar
 CFLAGS   := -Wall -Wextra -Werror -O2 -std=c11 -I.. -I../sentinel_core -MMD -MP -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 LDLIBS   := -lm
 
-SRCS     := decision_engine.c
+SRCS     := decision_engine.c signature_engine.c
 OBJS     := $(SRCS:.c=.o)
 DEPS     := $(SRCS:.c=.d)
 LIB      := libdecisionengine.a

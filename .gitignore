@@ -24,3 +24,23 @@ benchmarks/results/
 .env.local
 .env.*.local
 sentinel_events.db
+
+# Cloned reference repos (not part of Sentinel)
+DDoS-Attack-Detection-and-Mitigation/
+NetDeflect/
+gatekeeper/
+SDNSecurity_DDOSMitigationDecisionTree_PortBlocking/
+Ddos-attack-detection-and-mitigation-using-ML/
+
+# IDE directories
+.cursor/
+.vscode/
+
+# Audit process documents
+CRITICAL_AUDIT.md
+PRODUCTION_ISSUES.md
+
+# Compiled test binaries
+tests/integration_test
+tests/ml_test
+tests/ml_audit_proof

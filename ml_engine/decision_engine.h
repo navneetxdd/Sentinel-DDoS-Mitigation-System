@@ -35,6 +35,7 @@
 #define SENTINEL_DECISION_ENGINE_H
 
 #include "../sentinel_core/sentinel_types.h"
+#include "../l1_native/feature_extractor.h"
 #include <stdint.h>
 #include <stdatomic.h>
 
@@ -89,6 +90,7 @@ typedef struct de_thresholds {
     double   weight_anomaly;
     double   weight_chi_square;   /* chi-square concentration model weight */
     double   weight_fanin;        /* distributed-source fan-in model weight */
+    double   weight_signature;    /* reflection signature hint weight */
 
     /* chi-square thresholds */
     double   chi_square_thresh;   /* normalization divisor for chi stat (default 50.0) */
@@ -129,15 +131,16 @@ typedef struct de_thresholds {
     .l7_asymmetry_count_thresh = 50.0, \
     .default_rate_limit = 1000, \
     .default_quarantine = 300,  \
-    .weight_volume      = 0.15, \
-    .weight_entropy     = 0.10, \
-    .weight_protocol    = 0.15, \
-    .weight_behavioral  = 0.10, \
+    .weight_volume      = 0.12, \
+    .weight_entropy     = 0.08, \
+    .weight_protocol    = 0.12, \
+    .weight_behavioral  = 0.08, \
     .weight_ml          = 0.35, \
-    .weight_l7          = 0.10, \
+    .weight_l7          = 0.07, \
     .weight_anomaly     = 0.05, \
     .weight_chi_square  = 0.05, \
-    .weight_fanin       = 0.08, \
+    .weight_fanin       = 0.03, \
+    .weight_signature   = 0.05, \
     .chi_square_thresh  = 50.0, \
     .fanin_distributed_thresh = 16.0, \
     .anomaly_smoothing  = 0.02, \
@@ -164,6 +167,14 @@ typedef struct de_context de_context_t;
 
 de_context_t *de_init(const de_thresholds_t *cfg);
 void          de_destroy(de_context_t *ctx);
+
+/*  Load reflection signatures from JSON as bounded hints.
+ *  Returns the number of signatures loaded. */
+uint32_t      de_load_signatures(de_context_t *ctx, const char *json_path);
+
+/*  Match a packet against loaded signatures.
+ *  Returns the threat boost (0.0 to 1.0) if matched. */
+double        de_match_packet(de_context_t *ctx, const fe_packet_t *pkt);
 
 /*  Get current thresholds (for telemetry / feature importance). */
 const de_thresholds_t *de_get_thresholds(const de_context_t *ctx);

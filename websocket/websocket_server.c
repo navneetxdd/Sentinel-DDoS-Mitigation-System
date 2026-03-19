@@ -43,11 +43,15 @@
 
 #define WS_OUT_BUF_SIZE (128 * 1024)  /* 128KB per client buffer */
 
+#define WS_CMD_RATE_LIMIT_PER_SEC 10
+
 typedef struct ws_client {
     int      fd;
     int      handshake_done;
     time_t   connect_time;
     time_t   last_ping;
+    time_t   cmd_window_sec;   /* rate limit: window start */
+    int      cmd_count;       /* commands in current 1s window */
     char     remote_addr[64];
     /* Non-blocking write buffer */
     unsigned char out_buf[WS_OUT_BUF_SIZE];
@@ -73,12 +77,18 @@ typedef enum {
     WS_MSG_TYPE_FEATURE_IMPORTANCE,
     WS_MSG_TYPE_FEATURE_VECTOR,
     WS_MSG_TYPE_CONNECTIONS,
-    WS_MSG_TYPE_MITIGATION_STATUS
+    WS_MSG_TYPE_MITIGATION_STATUS,
+    WS_MSG_TYPE_INTEGRATION_STATUS,
+    WS_MSG_TYPE_COMMAND_RESULT
 } ws_msg_type_t;
 
 #define MAX_IP_LIST_BATCH 128
 #define MAX_TOP_SOURCES_BATCH 10
 #define MAX_CONNECTIONS_BATCH 10
+/* Cap entries per JSON message so 16KB buf_local never overflows (avoids silent drop). */
+#define WS_MAX_JSON_IP_ENTRIES  64
+#define WS_MAX_JSON_TOP_SOURCES 32
+#define WS_MAX_JSON_CONNECTIONS 64
 
 typedef struct ws_raw_msg {
     ws_msg_type_t type;
@@ -102,6 +112,8 @@ typedef struct ws_raw_msg {
             uint32_t count;
         } connections;
         ws_mitigation_status_t mitigation_status;
+        ws_integration_status_t integration_status;
+        ws_command_result_t command_result;
     } data;
 } ws_raw_msg_t;
 
@@ -234,8 +246,21 @@ static int json_append(char *buf, size_t cap, size_t *used, const char *fmt, ...
  * WEBSOCKET HANDSHAKE
  * ============================================================================ */
 
-static int ws_handshake(int fd, const char *request)
+static int ws_handshake(ws_context_t *ctx, int fd, const char *request)
 {
+    /* Production Hardening: Mandatory API-Key check via Sec-WebSocket-Protocol.
+     * This is required because standard browser WebSocket APIs cannot send custom headers. */
+    if (ctx->cfg.api_key[0] != '\0') {
+        char protocol_header[128];
+        snprintf(protocol_header, sizeof(protocol_header), "Sec-WebSocket-Protocol: %s", ctx->cfg.api_key);
+        if (!strstr(request, protocol_header)) {
+            LOG_WARN("[WS] Handshake failed: Missing or invalid API key in Sec-WebSocket-Protocol");
+            const char *fail = "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n";
+            send(fd, fail, strlen(fail), MSG_NOSIGNAL);
+            return -1;
+        }
+    }
+
     char key[256] = {0};
     const char *p = strstr(request, "Sec-WebSocket-Key:");
     if (!p) return -1;
@@ -317,8 +342,12 @@ static void ws_queue_raw(ws_context_t *ctx, const ws_raw_msg_t *msg)
     unsigned int next = (tail + 1) % MAX_PENDING_MESSAGES;
 
     if (next == head) {
-        /* Drop telemetry if queue is full. No blocking. */
+        /* Queue full: drop oldest (advance head), then enqueue new in freed slot. */
         atomic_fetch_add_explicit(&ctx->messages_dropped, 1, memory_order_relaxed);
+        unsigned int new_head = (head + 1) % MAX_PENDING_MESSAGES;
+        atomic_store_explicit(&ctx->msg_head, new_head, memory_order_release);
+        ctx->messages[head] = *msg;
+        atomic_store_explicit(&ctx->msg_tail, new_head, memory_order_release);
         return;
     }
 
@@ -364,17 +393,56 @@ static int json_extract_string(const char *json, const char *key, char *out, siz
     return 0;
 }
 
+/* Minimal JSON unsigned extractor: finds "key":123 and parses decimal value. */
+static int json_extract_uint(const char *json, const char *key, uint32_t *out)
+{
+    char needle[128];
+    snprintf(needle, sizeof(needle), "\"%s\":", key);
+    const char *p = strstr(json, needle);
+    if (!p || !out) return -1;
+    p += strlen(needle);
+    while (*p == ' ') p++;
+    errno = 0;
+    char *endptr = NULL;
+    unsigned long v = strtoul(p, &endptr, 10);
+    if (endptr == p || errno != 0 || v > 0xFFFFFFFFUL) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
 static void ws_handle_command_json(ws_context_t *ctx, const char *json)
 {
-    char cmd[64] = {0};
+    char cmd[WS_COMMAND_NAME_MAX] = {0};
     char arg[128] = {0};
+    char request_id[WS_COMMAND_REQUEST_ID_MAX] = {0};
+    uint32_t contract_version = 0;
     if (json_extract_string(json, "command", cmd, sizeof(cmd)) != 0)
         return;  /* No "command" field */
+    
     json_extract_string(json, "ip", arg, sizeof(arg));
     if (arg[0] == '\0')
         json_extract_string(json, "value", arg, sizeof(arg));
+
+    /* Production Hardening: Input Sanitization (IP validation) */
+    if (arg[0] != '\0' && (strstr(cmd, "ip") || strstr(cmd, "whitelist"))) {
+        /* block_ip_port accepts "ip:port"; validate IP part only in that case */
+        int skip_strict = (strcmp(cmd, "block_ip_port") == 0);
+        if (!skip_strict) {
+            struct in_addr sa;
+            if (inet_pton(AF_INET, arg, &sa) != 1) {
+                return;
+            }
+        }
+    }
+
+    (void)json_extract_string(json, "request_id", request_id, sizeof(request_id));
+    (void)json_extract_uint(json, "contract_version", &contract_version);
     if (ctx->cmd_cb)
-        ctx->cmd_cb(cmd, arg[0] ? arg : NULL, ctx->cmd_cb_udata);
+        ctx->cmd_cb(cmd,
+                    arg[0] ? arg : NULL,
+                    request_id[0] ? request_id : NULL,
+                    contract_version,
+                    ctx->cmd_cb_udata);
 }
 
 /* ============================================================================
@@ -454,7 +522,7 @@ static void *ws_server_thread(void *arg)
                 
                 if (!ctx->clients[i].handshake_done) {
                     buf[nr] = '\0';
-                    if (ws_handshake(fd, buf) == 0)
+                    if (ws_handshake(ctx, fd, buf) == 0)
                         ctx->clients[i].handshake_done = 1;
                     else {
                         ws_remove_client_locked(ctx, i);
@@ -489,14 +557,24 @@ static void *ws_server_thread(void *arg)
                         }
                         if (opcode == WS_OPCODE_TEXT && payload_len > 0 &&
                             (size_t)nr >= hdr + payload_len && payload_len < 4096) {
-                            /* Unmask payload */
-                            char cmd_buf[4096];
-                            for (uint64_t j = 0; j < payload_len; j++)
-                                cmd_buf[j] = (char)(frame[hdr + j] ^ mask_key[j % 4]);
-                            cmd_buf[payload_len] = '\0';
-                            /* Parse and dispatch command */
-                            if (ctx->cmd_cb) {
-                                ws_handle_command_json(ctx, cmd_buf);
+                            /* Per-client command rate limit (max WS_CMD_RATE_LIMIT_PER_SEC per second) */
+                            time_t now_sec = time(NULL);
+                            if (now_sec != ctx->clients[i].cmd_window_sec) {
+                                ctx->clients[i].cmd_window_sec = now_sec;
+                                ctx->clients[i].cmd_count = 0;
+                            }
+                            ctx->clients[i].cmd_count++;
+                            if (ctx->clients[i].cmd_count > WS_CMD_RATE_LIMIT_PER_SEC) {
+                                /* Drop excess commands; no callback */
+                            } else {
+                                /* Unmask payload */
+                                char cmd_buf[4096];
+                                for (uint64_t j = 0; j < payload_len; j++)
+                                    cmd_buf[j] = (char)(frame[hdr + j] ^ mask_key[j % 4]);
+                                cmd_buf[payload_len] = '\0';
+                                if (ctx->cmd_cb) {
+                                    ws_handle_command_json(ctx, cmd_buf);
+                                }
                             }
                         } else if (opcode == WS_OPCODE_CLOSE) {
                             ws_remove_client_locked(ctx, i);
@@ -529,11 +607,12 @@ flush_phase:
                 case WS_MSG_TYPE_METRICS: {
                     ws_metrics_t *m = &raw_msg.data.metrics;
                     n_json = snprintf(buf_local, sizeof(buf_local),
-                        "{\"type\":\"metrics\",\"data\":{"
+                        "{\"schema_version\":%u,\"type\":\"metrics\",\"data\":{"
                         "\"packets_per_sec\":%lu,\"bytes_per_sec\":%lu,\"active_flows\":%u,"
                         "\"active_sources\":%u,\"ml_classifications_per_sec\":%u,"
                         "\"cpu_usage_percent\":%.2f,\"memory_usage_mb\":%.2f,"
                         "\"kernel_drops\":%lu,\"userspace_drops\":%lu}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         (unsigned long)m->packets_per_sec, (unsigned long)m->bytes_per_sec,
                         m->active_flows, m->active_sources, m->ml_classifications_per_sec,
                         m->cpu_usage_percent, m->memory_usage_mb,
@@ -546,9 +625,10 @@ flush_phase:
                     struct in_addr addr = { .s_addr = a->src_ip };
                     inet_ntop(AF_INET, &addr, ip, sizeof(ip));
                     n_json = snprintf(buf_local, sizeof(buf_local),
-                        "{\"type\":\"activity_logs\",\"data\":{"
+                        "{\"schema_version\":%u,\"type\":\"activity_logs\",\"data\":{"
                         "\"timestamp\":%lu,\"src_ip\":\"%s\",\"action\":\"%s\","
                         "\"attack_type\":\"%s\",\"threat_score\":%.3f,\"reason\":\"%s\",\"enforced\":%s}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         (unsigned long)(a->timestamp_ns / 1000000000ULL),
                         ip, a->action, a->attack_type, a->threat_score, a->reason, a->enforced ? "true" : "false");
                     break;
@@ -561,11 +641,13 @@ flush_phase:
                                            (raw_msg.type == WS_MSG_TYPE_IP_LIST_RATE_LIMITED) ? "rate_limited_ips" :
                                            (raw_msg.type == WS_MSG_TYPE_IP_LIST_MONITORED) ? "monitored_ips" : "whitelisted_ips";
                     size_t used = 0;
-                    if (json_append(buf_local, sizeof(buf_local), &used, "{\"type\":\"%s\",\"data\":[", type_str) != 0) {
+                    if (json_append(buf_local, sizeof(buf_local), &used, "{\"schema_version\":%u,\"type\":\"%s\",\"data\":[", (unsigned)WS_TELEMETRY_SCHEMA_VERSION, type_str) != 0) {
                         n_json = -1;
                         break;
                     }
-                    for (uint32_t i = 0; i < raw_msg.data.ip_list.count; i++) {
+                    uint32_t ip_cap = raw_msg.data.ip_list.count;
+                    if (ip_cap > (uint32_t)WS_MAX_JSON_IP_ENTRIES) ip_cap = (uint32_t)WS_MAX_JSON_IP_ENTRIES;
+                    for (uint32_t i = 0; i < ip_cap; i++) {
                         ws_ip_entry_t *e = &raw_msg.data.ip_list.entries[i];
                         char ip[INET_ADDRSTRLEN];
                         struct in_addr addr = { .s_addr = e->ip };
@@ -597,8 +679,9 @@ flush_phase:
                 case WS_MSG_TYPE_TRAFFIC_RATE: {
                     ws_traffic_rate_t *r = &raw_msg.data.traffic_rate;
                     n_json = snprintf(buf_local, sizeof(buf_local),
-                        "{\"type\":\"traffic_rate\",\"data\":{"
+                        "{\"schema_version\":%u,\"type\":\"traffic_rate\",\"data\":{"
                         "\"total_pps\":%lu,\"total_bps\":%lu,\"tcp_pps\":%lu,\"udp_pps\":%lu,\"icmp_pps\":%lu,\"other_pps\":%lu}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         (unsigned long)r->total_pps, (unsigned long)r->total_bps, (unsigned long)r->tcp_pps,
                         (unsigned long)r->udp_pps, (unsigned long)r->icmp_pps, (unsigned long)r->other_pps);
                     break;
@@ -606,20 +689,23 @@ flush_phase:
                 case WS_MSG_TYPE_PROTOCOL_DIST: {
                     ws_protocol_dist_t *d = &raw_msg.data.protocol_dist;
                     n_json = snprintf(buf_local, sizeof(buf_local),
-                        "{\"type\":\"protocol_distribution\",\"data\":{"
+                        "{\"schema_version\":%u,\"type\":\"protocol_distribution\",\"data\":{"
                         "\"tcp_percent\":%.2f,\"udp_percent\":%.2f,\"icmp_percent\":%.2f,\"other_percent\":%.2f,"
                         "\"tcp_bytes\":%lu,\"udp_bytes\":%lu,\"icmp_bytes\":%lu,\"other_bytes\":%lu}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         d->tcp_percent, d->udp_percent, d->icmp_percent, d->other_percent,
                         (unsigned long)d->tcp_bytes, (unsigned long)d->udp_bytes, (unsigned long)d->icmp_bytes, (unsigned long)d->other_bytes);
                     break;
                 }
                 case WS_MSG_TYPE_TOP_SOURCES: {
                     size_t used = 0;
-                    if (json_append(buf_local, sizeof(buf_local), &used, "{\"type\":\"top_sources\",\"data\":[") != 0) {
+                    if (json_append(buf_local, sizeof(buf_local), &used, "{\"schema_version\":%u,\"type\":\"top_sources\",\"data\":[", (unsigned)WS_TELEMETRY_SCHEMA_VERSION) != 0) {
                         n_json = -1;
                         break;
                     }
-                    for (uint32_t i = 0; i < raw_msg.data.top_sources.count; i++) {
+                    uint32_t top_cap = raw_msg.data.top_sources.count;
+                    if (top_cap > (uint32_t)WS_MAX_JSON_TOP_SOURCES) top_cap = (uint32_t)WS_MAX_JSON_TOP_SOURCES;
+                    for (uint32_t i = 0; i < top_cap; i++) {
                         ws_top_source_t *s = &raw_msg.data.top_sources.sources[i];
                         char ip[INET_ADDRSTRLEN];
                         struct in_addr addr = { .s_addr = s->src_ip };
@@ -641,22 +727,25 @@ flush_phase:
                 case WS_MSG_TYPE_FEATURE_IMPORTANCE: {
                     ws_feature_importance_t *f = &raw_msg.data.feature_importance;
                     n_json = snprintf(buf_local, sizeof(buf_local),
-                        "{\"type\":\"feature_importance\",\"data\":{"
+                        "{\"schema_version\":%u,\"type\":\"feature_importance\",\"data\":{"
                         "\"volume_weight\":%.3f,\"entropy_weight\":%.3f,\"protocol_weight\":%.3f,\"behavioral_weight\":%.3f,"
                         "\"ml_weight\":%.3f,\"l7_weight\":%.3f,\"anomaly_weight\":%.3f,\"chi_square_weight\":%.3f,\"fanin_weight\":%.3f,"
-                        "\"avg_threat_score\":%.3f,\"avg_fanin_score\":%.3f,\"detections_last_10s\":%u,"
+                        "\"signature_weight\":%.3f,\"avg_threat_score\":%.3f,\"avg_fanin_score\":%.3f,\"avg_signature_score\":%.3f,"
+                        "\"detections_last_10s\":%u,"
                         "\"policy_arm\":%u,\"policy_updates\":%lu,\"policy_last_reward\":%.3f}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         f->volume_weight, f->entropy_weight, f->protocol_weight, f->behavioral_weight,
                         f->ml_weight, f->l7_weight, f->anomaly_weight, f->chi_square_weight, f->fanin_weight,
-                        f->avg_threat_score, f->avg_fanin_score, f->detections_last_10s,
+                        f->signature_weight, f->avg_threat_score, f->avg_fanin_score, f->avg_signature_score, f->detections_last_10s,
                         f->policy_arm, (unsigned long)f->policy_updates, f->policy_last_reward);
                     break;
                 }
                 case WS_MSG_TYPE_FEATURE_VECTOR: {
                     ws_raw_feature_vector_t *v = &raw_msg.data.feature_vector;
                     n_json = snprintf(buf_local, sizeof(buf_local),
-                        "{\"type\":\"feature_vector\",\"data\":[%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
+                        "{\"schema_version\":%u,\"type\":\"feature_vector\",\"data\":[%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,"
                         "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f]}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         v->values[0], v->values[1], v->values[2], v->values[3], v->values[4],
                         v->values[5], v->values[6], v->values[7], v->values[8], v->values[9],
                         v->values[10], v->values[11], v->values[12], v->values[13], v->values[14],
@@ -666,11 +755,13 @@ flush_phase:
                 }
                 case WS_MSG_TYPE_CONNECTIONS: {
                     size_t used = 0;
-                    if (json_append(buf_local, sizeof(buf_local), &used, "{\"type\":\"active_connections\",\"data\":[") != 0) {
+                    if (json_append(buf_local, sizeof(buf_local), &used, "{\"schema_version\":%u,\"type\":\"active_connections\",\"data\":[", (unsigned)WS_TELEMETRY_SCHEMA_VERSION) != 0) {
                         n_json = -1;
                         break;
                     }
-                    for (uint32_t i = 0; i < raw_msg.data.connections.count; i++) {
+                    uint32_t conn_cap = raw_msg.data.connections.count;
+                    if (conn_cap > (uint32_t)WS_MAX_JSON_CONNECTIONS) conn_cap = (uint32_t)WS_MAX_JSON_CONNECTIONS;
+                    for (uint32_t i = 0; i < conn_cap; i++) {
                         ws_connection_t *c = &raw_msg.data.connections.conns[i];
                         char sip[INET_ADDRSTRLEN], dip[INET_ADDRSTRLEN];
                         struct in_addr sa = { .s_addr = c->src_ip };
@@ -715,15 +806,158 @@ flush_phase:
                         *dst = '\0';
                     }
                     n_json = snprintf(buf_local, sizeof(buf_local),
-                        "{\"type\":\"mitigation_status\",\"data\":{"
+                        "{\"schema_version\":%u,\"type\":\"mitigation_status\",\"data\":{"
                         "\"total_blocked\":%u,\"total_rate_limited\":%u,\"total_monitored\":%u,\"total_whitelisted\":%u,"
                         "\"kernel_verdict_cache_hits\":%lu,\"kernel_verdict_cache_misses\":%lu,\"active_sdn_rules\":%u,"
                         "\"auto_mitigation_enabled\":%s,\"kernel_dropping_enabled\":%s,\"sdn_connected\":%d,"
                         "\"sdn_last_error\":\"%s\"}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         s->total_blocked, s->total_rate_limited, s->total_monitored, s->total_whitelisted,
                         (unsigned long)s->kernel_verdict_cache_hits, (unsigned long)s->kernel_verdict_cache_misses,
                         s->active_sdn_rules, s->auto_mitigation_enabled ? "true" : "false",
                         (s->kernel_dropping_enabled != 0) ? "true" : "false", s->sdn_connected, err_esc);
+                    break;
+                }
+                case WS_MSG_TYPE_INTEGRATION_STATUS: {
+                    ws_integration_status_t *s = &raw_msg.data.integration_status;
+                    char profile_esc[WS_INTEGRATION_PROFILE_MAX * 2 + 1];
+                    char gatekeeper_err_esc[WS_GATEKEEPER_LAST_ERROR_MAX * 2 + 1];
+                    {
+                        const char *src = s->profile;
+                        char *dst = profile_esc;
+                        size_t remain = sizeof(profile_esc) - 1;
+                        while (*src && remain > 1) {
+                            if (*src == '"') {
+                                *dst++ = '\\'; *dst++ = '"';
+                                remain -= 2;
+                            } else if (*src == '\\') {
+                                *dst++ = '\\'; *dst++ = '\\';
+                                remain -= 2;
+                            } else if ((unsigned char)*src >= 0x20) {
+                                *dst++ = *src;
+                                remain--;
+                            }
+                            src++;
+                        }
+                        *dst = '\0';
+                    }
+                    {
+                        const char *src = s->gatekeeper_last_error;
+                        char *dst = gatekeeper_err_esc;
+                        size_t remain = sizeof(gatekeeper_err_esc) - 1;
+                        while (*src && remain > 1) {
+                            if (*src == '"') {
+                                *dst++ = '\\'; *dst++ = '"';
+                                remain -= 2;
+                            } else if (*src == '\\') {
+                                *dst++ = '\\'; *dst++ = '\\';
+                                remain -= 2;
+                            } else if ((unsigned char)*src >= 0x20) {
+                                *dst++ = *src;
+                                remain--;
+                            }
+                            src++;
+                        }
+                        *dst = '\0';
+                    }
+                    n_json = snprintf(buf_local, sizeof(buf_local),
+                        "{\"schema_version\":%u,\"type\":\"integration_status\",\"data\":{"
+                        "\"intel_feed_enabled\":%s,\"model_extension_enabled\":%s,\"controller_extension_enabled\":%s,"
+                        "\"signature_feed_enabled\":%s,\"dataplane_extension_enabled\":%s,"
+                        "\"gatekeeper_enabled\":%s,\"gatekeeper_connected\":%d,"
+                        "\"gatekeeper_failure_count\":%u,\"gatekeeper_failure_threshold\":%u,"
+                        "\"gatekeeper_circuit_open\":%s,\"gatekeeper_next_retry_sec\":%u,"
+                        "\"gatekeeper_last_error\":\"%s\","
+                        "\"profile\":\"%s\"}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
+                        s->intel_feed_enabled ? "true" : "false",
+                        s->model_extension_enabled ? "true" : "false",
+                        s->controller_extension_enabled ? "true" : "false",
+                        s->signature_feed_enabled ? "true" : "false",
+                        s->dataplane_extension_enabled ? "true" : "false",
+                        s->gatekeeper_enabled ? "true" : "false",
+                        s->gatekeeper_connected,
+                        s->gatekeeper_failure_count,
+                        s->gatekeeper_failure_threshold,
+                        s->gatekeeper_circuit_open ? "true" : "false",
+                        s->gatekeeper_next_retry_sec,
+                        gatekeeper_err_esc,
+                        profile_esc);
+                    break;
+                }
+                case WS_MSG_TYPE_COMMAND_RESULT: {
+                    ws_command_result_t *r = &raw_msg.data.command_result;
+                    char req_esc[WS_COMMAND_REQUEST_ID_MAX * 2 + 1];
+                    char cmd_esc[WS_COMMAND_NAME_MAX * 2 + 1];
+                    char msg_esc[WS_COMMAND_MESSAGE_MAX * 2 + 1];
+                    {
+                        const char *src = r->request_id;
+                        char *dst = req_esc;
+                        size_t remain = sizeof(req_esc) - 1;
+                        while (*src && remain > 1) {
+                            if (*src == '"') {
+                                *dst++ = '\\'; *dst++ = '"';
+                                remain -= 2;
+                            } else if (*src == '\\') {
+                                *dst++ = '\\'; *dst++ = '\\';
+                                remain -= 2;
+                            } else if ((unsigned char)*src >= 0x20) {
+                                *dst++ = *src;
+                                remain--;
+                            }
+                            src++;
+                        }
+                        *dst = '\0';
+                    }
+                    {
+                        const char *src = r->command;
+                        char *dst = cmd_esc;
+                        size_t remain = sizeof(cmd_esc) - 1;
+                        while (*src && remain > 1) {
+                            if (*src == '"') {
+                                *dst++ = '\\'; *dst++ = '"';
+                                remain -= 2;
+                            } else if (*src == '\\') {
+                                *dst++ = '\\'; *dst++ = '\\';
+                                remain -= 2;
+                            } else if ((unsigned char)*src >= 0x20) {
+                                *dst++ = *src;
+                                remain--;
+                            }
+                            src++;
+                        }
+                        *dst = '\0';
+                    }
+                    {
+                        const char *src = r->message;
+                        char *dst = msg_esc;
+                        size_t remain = sizeof(msg_esc) - 1;
+                        while (*src && remain > 1) {
+                            if (*src == '"') {
+                                *dst++ = '\\'; *dst++ = '"';
+                                remain -= 2;
+                            } else if (*src == '\\') {
+                                *dst++ = '\\'; *dst++ = '\\';
+                                remain -= 2;
+                            } else if ((unsigned char)*src >= 0x20) {
+                                *dst++ = *src;
+                                remain--;
+                            }
+                            src++;
+                        }
+                        *dst = '\0';
+                    }
+                    n_json = snprintf(buf_local, sizeof(buf_local),
+                        "{\"schema_version\":%u,\"type\":\"command_result\",\"data\":{"
+                        "\"timestamp\":%lu,\"contract_version\":%u,\"request_id\":\"%s\","
+                        "\"command\":\"%s\",\"success\":%s,\"message\":\"%s\"}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
+                        (unsigned long)(r->timestamp_ns / 1000000000ULL),
+                        r->contract_version,
+                        req_esc,
+                        cmd_esc,
+                        r->success ? "true" : "false",
+                        msg_esc);
                     break;
                 }
                 default: break;
@@ -954,6 +1188,20 @@ void ws_update_mitigation_status(ws_context_t *ctx, const ws_mitigation_status_t
 {
     if (!ctx || !s) return;
     ws_raw_msg_t msg = { .type = WS_MSG_TYPE_MITIGATION_STATUS, .data.mitigation_status = *s };
+    ws_queue_raw(ctx, &msg);
+}
+
+void ws_update_integration_status(ws_context_t *ctx, const ws_integration_status_t *s)
+{
+    if (!ctx || !s) return;
+    ws_raw_msg_t msg = { .type = WS_MSG_TYPE_INTEGRATION_STATUS, .data.integration_status = *s };
+    ws_queue_raw(ctx, &msg);
+}
+
+void ws_push_command_result(ws_context_t *ctx, const ws_command_result_t *result)
+{
+    if (!ctx || !result) return;
+    ws_raw_msg_t msg = { .type = WS_MSG_TYPE_COMMAND_RESULT, .data.command_result = *result };
     ws_queue_raw(ctx, &msg);
 }
 

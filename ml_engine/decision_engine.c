@@ -41,6 +41,7 @@
 #include "ml_model.h"
 #include "../sentinel_core/platform_compat.h"
 #include "../feedback/feedback.h"
+#include "signature_engine.h"
 #include <stdatomic.h>
 
 /* ============================================================================
@@ -120,6 +121,7 @@ struct de_context {
 
     ip_entry_t **allowlist;
     ip_entry_t **denylist;
+    sig_context_t *sig_ctx;
 };
 
 static const uint16_t k_default_reflection_ports[] = {
@@ -183,6 +185,69 @@ static uint32_t de_load_reflection_ports_from_string(de_context_t *ctx, const ch
     return added;
 }
 
+/* Parse one signature-feed JSON line and extract a reflection service port when present.
+ * Supported patterns in methods.json include:
+ *   "... Reflection": "17\t\t1900"
+ *   "... Reflection": "0x00000012\t\t443"
+ */
+static uint32_t de_load_reflection_port_from_signature_json_line(de_context_t *ctx, const char *line)
+{
+    char value[256];
+    const char *colon;
+    const char *q1;
+    const char *q2;
+    size_t n;
+    char tokens_buf[256];
+    char *tok;
+    long nums[8];
+    int nums_count = 0;
+    int saw_hex = 0;
+    uint16_t candidate = 0;
+
+    if (!ctx || !line) return 0;
+    if (!strstr(line, "Reflection")) return 0;
+
+    colon = strchr(line, ':');
+    if (!colon) return 0;
+    q1 = strchr(colon, '"');
+    if (!q1) return 0;
+    q1++;
+    q2 = strchr(q1, '"');
+    if (!q2 || q2 <= q1) return 0;
+
+    n = (size_t)(q2 - q1);
+    if (n >= sizeof(value)) n = sizeof(value) - 1;
+    memcpy(value, q1, n);
+    value[n] = '\0';
+
+    (void)snprintf(tokens_buf, sizeof(tokens_buf), "%s", value);
+    tok = strtok(tokens_buf, ",; \t\r\n");
+    while (tok && nums_count < (int)(sizeof(nums) / sizeof(nums[0]))) {
+        char *endp = NULL;
+        long v;
+        if ((tok[0] == '0') && (tok[1] == 'x' || tok[1] == 'X')) {
+            saw_hex = 1;
+        } else {
+            errno = 0;
+            v = strtol(tok, &endp, 10);
+            if (errno == 0 && endp && *endp == '\0' && v > 0 && v <= 65535) {
+                nums[nums_count++] = v;
+            }
+        }
+        tok = strtok(NULL, ",; \t\r\n");
+    }
+
+    if (nums_count >= 2 && nums[0] == 17) {
+        candidate = (uint16_t)nums[1];
+    } else if (saw_hex && nums_count >= 1) {
+        candidate = (uint16_t)nums[0];
+    } else {
+        return 0;
+    }
+
+    return de_add_reflection_port(ctx, candidate) ? 1U : 0U;
+}
+
 static uint32_t de_load_reflection_ports_from_file(de_context_t *ctx, const char *path)
 {
     if (!ctx || !path || !*path) return 0;
@@ -195,6 +260,7 @@ static uint32_t de_load_reflection_ports_from_file(de_context_t *ctx, const char
         char *hash = strchr(line, '#');
         if (hash) *hash = '\0';
         added += de_load_reflection_ports_from_string(ctx, line);
+        added += de_load_reflection_port_from_signature_json_line(ctx, line);
     }
     fclose(fp);
     return added;
@@ -304,8 +370,23 @@ de_context_t *de_init(const de_thresholds_t *cfg)
     ctx->baseline_slab[MAX_BASELINES - 1].next = NULL;
 
     de_load_reflection_ports(ctx);
+    ctx->sig_ctx = sig_init();
 
     return ctx;
+}
+
+uint32_t de_load_signatures(de_context_t *ctx, const char *json_path)
+{
+    if (!ctx || !ctx->sig_ctx || !json_path) return 0;
+    return sig_load_from_json(ctx->sig_ctx, json_path);
+}
+
+double de_match_packet(de_context_t *ctx, const fe_packet_t *pkt)
+{
+    if (!ctx || !ctx->sig_ctx || !pkt) return 0.0;
+    sig_match_result_t res;
+    sig_match_packet(ctx->sig_ctx, pkt, &res);
+    return res.matched ? res.boost : 0.0;
 }
 
 const de_thresholds_t *de_get_thresholds(const de_context_t *ctx)
@@ -358,6 +439,7 @@ void de_destroy(de_context_t *ctx)
     }
     free(ctx->allowlist);
     free(ctx->denylist);
+    if (ctx->sig_ctx) sig_destroy(ctx->sig_ctx);
     free(ctx);
 }
 
@@ -1200,13 +1282,15 @@ int de_classify(de_context_t *ctx,
                   + ctx->cfg.weight_l7          * s_l7
                   + ctx->cfg.weight_anomaly     * s_anom
                   + ctx->cfg.weight_chi_square  * s_chi
-                  + ctx->cfg.weight_fanin       * s_fanin;
+                  + ctx->cfg.weight_fanin       * s_fanin
+                  + ctx->cfg.weight_signature   * features->sig_boost;
 
     /* Absolute Reckoning Fix: Global Weight Normalization */
     double total_weight = ctx->cfg.weight_volume + ctx->cfg.weight_entropy +
                          ctx->cfg.weight_protocol + ctx->cfg.weight_behavioral +
                          ctx->cfg.weight_ml + ctx->cfg.weight_l7 +
-                         ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square + ctx->cfg.weight_fanin;
+                         ctx->cfg.weight_anomaly + ctx->cfg.weight_chi_square +
+                         ctx->cfg.weight_fanin + ctx->cfg.weight_signature;
     if (total_weight > 0.0) threat /= total_weight;
 
     threat = clamp01(threat);
@@ -1214,11 +1298,12 @@ int de_classify(de_context_t *ctx,
     /* confidence: higher when more observations and scores agree */
     double agreement = 1.0;
     {
-        double scores[9] = { s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom, s_chi, s_fanin };
-        double mean = (s_vol + s_ent + s_proto + s_behav + ml_score.effective_score + s_l7 + s_anom + s_chi + s_fanin) / 9.0;
+        double s_sig = features->sig_boost;
+        double scores[10] = { s_vol, s_ent, s_proto, s_behav, ml_score.effective_score, s_l7, s_anom, s_chi, s_fanin, s_sig };
+        double mean = (s_vol + s_ent + s_proto + s_behav + ml_score.effective_score + s_l7 + s_anom + s_chi + s_fanin + s_sig) / 10.0;
         double var = 0;
-        for (int i = 0; i < 9; i++) var += (scores[i] - mean) * (scores[i] - mean);
-        var /= 9.0;
+        for (int i = 0; i < 10; i++) var += (scores[i] - mean) * (scores[i] - mean);
+        var /= 10.0;
         /* low variance -> high agreement -> high confidence */
         agreement = 1.0 - clamp01(sqrt(var));
     }
@@ -1232,6 +1317,7 @@ int de_classify(de_context_t *ctx,
     out->score_ml          = ml_score.raw_score;
     out->score_l7          = s_l7;
     out->score_anomaly     = s_anom;
+    out->score_signature   = features->sig_boost;
     out->score_chi_square  = s_chi;
     out->score_fanin       = s_fanin;
     out->ml_reliability    = ml_score.reliability;
@@ -1272,6 +1358,7 @@ int de_classify(de_context_t *ctx,
         if (s_anom > strongest_non_ml) strongest_non_ml = s_anom;
         if (s_chi > strongest_non_ml) strongest_non_ml = s_chi;
         if (s_fanin > strongest_non_ml) strongest_non_ml = s_fanin;
+        if (features->sig_boost > strongest_non_ml) strongest_non_ml = features->sig_boost;
 
         int heuristics_strong =
             (non_ml_threat >= ctx->cfg.min_non_ml_score_for_hard_block) ||

@@ -39,6 +39,8 @@ This README is the canonical all-in-one operational guide. New users should be a
 - Sends mitigation actions to an OpenFlow controller when SDN mode is enabled.
 - Serves SHAP-based model explanations and Gemini-assisted analysis through the optional Python API.
 
+**Design and SLO:** Sentinel is designed for real-time classification (e.g. 1s telemetry, 5s top sources) and scales with AF_XDP and eBPF. Target operational goals: detect within 20s, mitigate within 2 minutes of detection. Policy is centralized: one pipeline applies a single policy (thresholds, allow/deny, rate limits); optional multi-node deployment can share the same config.
+
 ## Architecture
 
 ```mermaid
@@ -364,6 +366,8 @@ Health check:
 curl -s http://127.0.0.1:5001/health
 ```
 
+**Event history (Mitigation timeline):** The dashboard’s Mitigation Control page shows a timeline of block/rate-limit actions. After a reload, that timeline is restored from the Explain API’s `/events` endpoint. If the Explain API is not running or not reachable from the browser (e.g. CORS or network), the timeline will show only live events from the WebSocket until the next reload. The UI shows an “Event history unavailable” hint when the Explain API was configured but the event fetch failed.
+
 ### Frontend
 
 ```bash
@@ -439,6 +443,48 @@ wsl -d kali-linux -u root -e bash -lc "cd /mnt/c/path/to/Sentinel-main && make"
 
 ## Runtime Configuration
 
+### Phase 0 baseline freeze and rollback rails
+
+Capture a reproducible baseline snapshot before enabling additional integrations:
+
+```bash
+bash scripts/freeze_baseline.sh
+```
+
+This writes a timestamped report under:
+
+```text
+benchmarks/baselines/
+```
+
+To force rollback to baseline profile in the current shell:
+
+```bash
+source scripts/rollback_to_baseline.sh
+```
+
+Profile files are stored at:
+
+```text
+scripts/profiles/baseline.env
+scripts/profiles/progressive.env
+scripts/profiles/full.env
+```
+
+Select a profile before launch:
+
+```bash
+export SENTINEL_PROFILE=baseline
+./launch-sentinel.sh
+```
+
+On Windows:
+
+```powershell
+$env:SENTINEL_PROFILE = "baseline"
+.\Launch-Sentinel.bat
+```
+
 ### Reflection and amplification ports
 
 Default file:
@@ -453,11 +499,73 @@ Override via file:
 export SENTINEL_REFLECTION_PORTS_FILE=/path/to/reflection_ports.conf
 ```
 
+Signature feed integration option (reflection signatures file):
+
+```bash
+export SENTINEL_SIGNATURES_FILE=/path/to/signature_methods.json
+# or
+export SENTINEL_REFLECTION_PORTS_FILE=/path/to/signature_methods.json
+```
+
+If neither is set, the pipeline uses `signatures/methods.json` by default. Place a compatible reflection-signature JSON (e.g. protocol/port and hex-payload patterns) in that path to enable signature-based hints. The decision engine parses compatible reflection-signature JSON and imports recognized service ports directly.
+
 Override directly:
 
 ```bash
 export SENTINEL_REFLECTION_PORTS="53,123,1900,11211"
 ```
+
+### External integration feature flags
+
+All external module integrations are phase-gated and disabled by default. Enable only modules under active validation.
+
+```bash
+export SENTINEL_INTEGRATION_PROFILE=baseline
+export SENTINEL_ENABLE_INTEL_FEED=0
+export SENTINEL_ENABLE_MODEL_EXTENSION=0
+export SENTINEL_ENABLE_CONTROLLER_EXTENSION=0
+export SENTINEL_ENABLE_SIGNATURE_FEED=0
+export SENTINEL_ENABLE_DATAPLANE_EXTENSION=0
+export SENTINEL_ENABLE_GATEKEEPER_SIDECAR=0
+```
+
+Optional controller-extension command bridge:
+
+```bash
+export SENTINEL_CONTROLLER_EXTENSION_CMD="/path/to/controller_extension.sh"
+export SENTINEL_CONTROLLER_EXTENSION_MIN_INTERVAL_MS=2000
+```
+
+When enabled, Sentinel exports event context through environment variables before invoking the command:
+
+- `SENTINEL_EXTENSION_SRC_IP`
+- `SENTINEL_EXTENSION_ACTION`
+- `SENTINEL_EXTENSION_ATTACK_TYPE`
+- `SENTINEL_EXTENSION_THREAT_SCORE`
+- `SENTINEL_EXTENSION_CONFIDENCE`
+- `SENTINEL_EXTENSION_RULE_ID`
+- `SENTINEL_EXTENSION_SDN_PUSH_OK`
+
+Suggested profile progression:
+
+- `baseline`: core runtime only
+- `progressive`: module-by-module enablement during validation
+- `full`: all integration modules enabled after quality gates are green
+
+Gatekeeper sidecar health integration knobs (used when `SENTINEL_ENABLE_GATEKEEPER_SIDECAR=1`):
+
+```bash
+export SENTINEL_GATEKEEPER_HEALTH_URL="http://127.0.0.1:9000/health"
+export SENTINEL_GATEKEEPER_PROBE_INTERVAL_SEC=5
+export SENTINEL_GATEKEEPER_FAILURE_THRESHOLD=3
+export SENTINEL_GATEKEEPER_CIRCUIT_COOLDOWN_SEC=15
+export SENTINEL_GATEKEEPER_STARTUP_RETRIES=3
+export SENTINEL_GATEKEEPER_STARTUP_RETRY_DELAY_MS=1000
+export SENTINEL_GATEKEEPER_PROBE_TIMEOUT_MS=1500
+export SENTINEL_GATEKEEPER_CONNECT_TIMEOUT_MS=800
+```
+
+When repeated health checks fail, Sentinel opens a circuit for the cooldown window and reports the degraded state through `integration_status` telemetry (`gatekeeper_circuit_open`, failure counters, and next retry seconds).
 
 ### Frontend endpoint overrides
 
@@ -521,6 +629,11 @@ When the backend runs with `-w 8765`, telemetry streams include:
 - `feature_importance`
 - `active_connections`
 - `mitigation_status`
+- `integration_status`
+
+**Commands (dashboard → pipeline):** The Settings page syncs thresholds via `set_syn_threshold`, `set_conn_threshold`, `set_pps_threshold`, `set_entropy_threshold`, and `set_contributor_threshold` (0–100; only consider IPs contributing at least that % of top-source traffic for Block top contributors; 0 = disabled). Mitigation Control supports `block_ip` (ip), `block_ip_port` (value: `ip` or `ip:port` for SDN port-level drop), `block_all_flagged`, `clear_all_blocks`, `apply_rate_limit`, and `enable_auto_mitigation` / `disable_auto_mitigation`.
+
+**Telemetry backpressure and limits:** The WebSocket server queues up to 1000 telemetry messages (`MAX_PENDING_MESSAGES`). When the queue is full, the oldest message is dropped and the new one is enqueued (drop-oldest policy); the server increments a dropped counter (no blocking). List payloads are capped so each JSON message fits in a 16 KB buffer: at most 64 entries per IP list (blocked/rate-limited/monitored/whitelisted), 32 top sources, and 64 active connections. Max concurrent clients default to 100 (configurable). Commands from the dashboard are rate-limited per client (10 per second); excess commands in the same second are dropped. The frontend reconnects with exponential backoff (up to 30 s) and keeps retrying. For high-load or many clients, expect some telemetry drops when the queue is full; the UI reflects the latest data that was sent.
 
 ## Verification Checklist
 

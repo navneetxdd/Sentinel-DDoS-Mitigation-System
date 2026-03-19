@@ -46,6 +46,7 @@ const FEATURE_META: { key: keyof SentinelFeatureImportance; name: string; color:
   { key: "anomaly_weight", name: "Anomaly", color: "hsl(220, 70%, 60%)" },
   { key: "chi_square_weight", name: "Chi-Square", color: "hsl(340, 82%, 58%)" },
   { key: "fanin_weight", name: "Fan-In", color: "hsl(120, 70%, 42%)" },
+  { key: "signature_weight", name: "Signatures", color: "hsl(280, 85%, 55%)" },
 ];
 
 const SHAP_COLORS = [

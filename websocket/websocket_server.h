@@ -1,7 +1,7 @@
 /*
  * Sentinel DDoS Core - WebSocket Server for Real-time Data Streaming
  *
- * Broadcasts 12 data streams to connected web clients:
+ * Broadcasts 14 data streams to connected web clients:
  *   1. metrics (1s)             - System performance counters
  *   2. activity_logs (event)    - Mitigation actions
  *   3. blocked_ips (change)     - Blocked IP list
@@ -14,6 +14,8 @@
  *  10. feature_importance (10s) - ML detection factors
  *  11. active_connections (1s)  - Active flows
  *  12. mitigation_status (1s)   - Mitigation summary
+ *  13. integration_status (1s)  - External integration flags/profile
+ *  14. command_result (event)    - Browser command ACK/error status
  *
  * Also accepts JSON commands from clients (browser -> pipeline).
  * Uses a lightweight built-in WebSocket implementation.
@@ -39,13 +41,15 @@ typedef struct ws_config {
     char     bind_addr[64];         /* Bind address (default "0.0.0.0") */
     int      max_clients;           /* Max concurrent clients */
     int      ping_interval_sec;     /* WebSocket ping interval */
+    char     api_key[64];           /* Mandatory API key for handshake */
 } ws_config_t;
 
 #define WS_CONFIG_DEFAULT { \
     .port = 8765,               \
     .bind_addr = "0.0.0.0",     \
     .max_clients = 100,         \
-    .ping_interval_sec = 30     \
+    .ping_interval_sec = 30,    \
+    .api_key = ""               \
 }
 
 /* ============================================================================
@@ -132,8 +136,10 @@ typedef struct ws_feature_importance {
     double anomaly_weight;
     double chi_square_weight;
     double fanin_weight;
+    double signature_weight;   /* reflection signature weight */
     double avg_threat_score;
     double avg_fanin_score;
+    double avg_signature_score;/* average signature boost in current window */
     uint32_t detections_last_10s;
     uint32_t policy_arm;
     uint64_t policy_updates;
@@ -153,6 +159,13 @@ typedef struct ws_connection {
 } ws_connection_t;
 
 #define WS_SDN_LAST_ERROR_MAX 128
+#define WS_INTEGRATION_PROFILE_MAX 64
+#define WS_COMMAND_NAME_MAX 64
+#define WS_COMMAND_MESSAGE_MAX 160
+#define WS_COMMAND_REQUEST_ID_MAX 64
+#define WS_COMMAND_CONTRACT_VERSION 1
+#define WS_TELEMETRY_SCHEMA_VERSION 1
+#define WS_GATEKEEPER_LAST_ERROR_MAX 128
 
 /* Stream 12: Mitigation Status */
 typedef struct ws_mitigation_status {
@@ -168,6 +181,33 @@ typedef struct ws_mitigation_status {
     int      sdn_connected;            /* 1=last push ok, 0=last push failed, -1=never probed */
     char     sdn_last_error[WS_SDN_LAST_ERROR_MAX];  /* Last SDN push error for ops debugging */
 } ws_mitigation_status_t;
+
+/* Stream 13: Integration status (phase-gated external modules) */
+typedef struct ws_integration_status {
+    int  intel_feed_enabled;
+    int  model_extension_enabled;
+    int  controller_extension_enabled;
+    int  signature_feed_enabled;
+    int  dataplane_extension_enabled;
+    int  gatekeeper_enabled;
+    int  gatekeeper_connected; /* 1=last probe ok, 0=last probe failed, -1=not probed */
+    uint32_t gatekeeper_failure_count;
+    uint32_t gatekeeper_failure_threshold;
+    int  gatekeeper_circuit_open;
+    uint32_t gatekeeper_next_retry_sec;
+    char gatekeeper_last_error[WS_GATEKEEPER_LAST_ERROR_MAX];
+    char profile[WS_INTEGRATION_PROFILE_MAX];
+} ws_integration_status_t;
+
+/* Command execution result (browser command -> pipeline ack) */
+typedef struct ws_command_result {
+    uint64_t timestamp_ns;
+    uint32_t contract_version;
+    char     request_id[WS_COMMAND_REQUEST_ID_MAX];
+    char     command[WS_COMMAND_NAME_MAX];
+    int      success;
+    char     message[WS_COMMAND_MESSAGE_MAX];
+} ws_command_result_t;
 
 /* ============================================================================
  * OPAQUE HANDLE
@@ -201,16 +241,22 @@ void ws_update_feature_importance(ws_context_t *ctx, const ws_feature_importance
 void ws_update_feature_vector(ws_context_t *ctx, const ws_raw_feature_vector_t *vec);
 void ws_update_connections(ws_context_t *ctx, const ws_connection_t *conns, uint32_t count);
 void ws_update_mitigation_status(ws_context_t *ctx, const ws_mitigation_status_t *status);
+void ws_update_integration_status(ws_context_t *ctx, const ws_integration_status_t *status);
+void ws_push_command_result(ws_context_t *ctx, const ws_command_result_t *result);
 
 /* ============================================================================
  * COMMAND CALLBACK (browser -> pipeline)
  * ============================================================================ */
 
 /* Called on the WS server thread when a client sends a JSON command.
- * cmd    - command string, e.g. "block_ip", "whitelist_ip", "clear_all_blocks"
- * arg    - argument string, e.g. an IP address "1.2.3.4" (may be NULL)
- * udata  - user-provided context (typically the de_context_t pointer)           */
-typedef void (*ws_command_cb_t)(const char *cmd, const char *arg, void *udata);
+ * cmd               - command string, e.g. "block_ip", "whitelist_ip"
+ * arg               - argument string, e.g. an IP address "1.2.3.4" (may be NULL)
+ * request_id        - caller-generated request id (may be NULL)
+ * contract_version  - command payload contract version (0 when omitted)
+ * udata             - user-provided context (typically the de_context_t pointer) */
+typedef void (*ws_command_cb_t)(const char *cmd, const char *arg,
+                                const char *request_id, uint32_t contract_version,
+                                void *udata);
 
 void ws_set_command_callback(ws_context_t *ctx, ws_command_cb_t cb, void *udata);
 
