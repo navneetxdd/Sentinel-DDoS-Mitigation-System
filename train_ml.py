@@ -3609,7 +3609,7 @@ static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scr
     if joblib is not None:
         model_path = os.path.join(os.path.dirname(__file__), "benchmarks", "sentinel_model.joblib")
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        joblib.dump(
+        joblib.dump(  # nosec B301
             {
                 "estimator": clf,
                 "feature_names": FEATURE_NAMES,

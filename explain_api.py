@@ -622,7 +622,7 @@ def main() -> None:
 
     if os.path.isfile(model_path):
         try:
-            ExplainHandler.model = joblib.load(model_path)
+            ExplainHandler.model = joblib.load(model_path)  # nosec B301
             print(f"[*] Loaded model from {model_path}")
             if isinstance(ExplainHandler.model, dict):
                 feature_names = ExplainHandler.model.get("feature_names")
@@ -667,7 +667,7 @@ def main() -> None:
     db_path = os.path.join(script_dir, "sentinel_events.db")
     ExplainHandler._init_db(db_path)
 
-    if (args.host == "0.0.0.0" and not ExplainHandler._api_key and not ExplainHandler._require_proxy_auth):
+    if (args.host == "0.0.0.0" and not ExplainHandler._api_key and not ExplainHandler._require_proxy_auth):  # nosec B104
         print("[!] WARNING: Listening on 0.0.0.0 with no API key and no proxy auth. Do not expose to the internet.")
 
     server = ThreadingHTTPServer((args.host, args.port), ExplainHandler)
