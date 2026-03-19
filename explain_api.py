@@ -297,19 +297,37 @@ class ExplainHandler(BaseHTTPRequestHandler):
 
         try:
             shap_values = ExplainHandler._explainer.shap_values(X_scaled)
+            
+            # TreeExplainer output shape varies across SHAP versions/model types.
+            # Normalize to a 2D float array: [num_samples, num_features].
+            shap_values = np.asarray(shap_values)
+            if shap_values.ndim == 3:
+                # Multi-output/multiclass: use positive class when available.
+                out_idx = 1 if shap_values.shape[2] > 1 else 0
+                shap_values = shap_values[:, :, out_idx]
+            elif shap_values.ndim == 1:
+                shap_values = shap_values.reshape(1, -1)
+            elif shap_values.ndim != 2:
+                self._json_response(
+                    500,
+                    {
+                        "error": "Unexpected SHAP output shape",
+                        "shape": list(shap_values.shape),
+                    },
+                )
+                return
+            shap_values = shap_values.astype(np.float64, copy=False)
         except Exception as e:
-            self._json_response(500, {"error": f"SHAP computation failed: {e}"})
+            self._json_response(500, {"error": f"Invalid SHAP output format or computation failed: {e}"})
             return
-
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1] if len(shap_values) > 1 else shap_values[0]
 
         feature_names = ExplainHandler._feature_names[: X_scaled.shape[1]]
         contributions: List[List[Dict[str, Any]]] = []
         for i in range(len(X_scaled)):
             row: List[Dict[str, Any]] = []
             for j in range(len(feature_names)):
-                raw_val = float(shap_values[i, j]) if shap_values.ndim >= 2 else float(shap_values[i])
+                # shap_values is now guaranteed 2D: [num_samples, num_features]
+                raw_val = float(shap_values[i, j])
                 # Guard against NaN/Inf which would break JSON serialization
                 val = 0.0 if math.isnan(raw_val) or math.isinf(raw_val) else raw_val
                 row.append({"name": feature_names[j], "value": val})
