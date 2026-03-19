@@ -6,7 +6,9 @@ build/
 .venv-controller/
 .venv/
 .venv-1/
-*.joblib
+# Models
+# *.joblib
+!benchmarks/sentinel_model.joblib
 node_modules/
 *.o
 *.a
