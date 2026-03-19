@@ -74,7 +74,7 @@ export function FeatureImportanceChart({
   const [showShap, setShowShap] = useState(false);
 
   const hasShap = shapContributions && shapContributions.length > 0;
-  const canRequestShap = featureVector && (featureVector.length === 20 || featureVector.length === 21 || featureVector.length === 22) && onRequestShap;
+  const canRequestShap = featureVector && featureVector.length >= 20 && onRequestShap;
 
   const heuristicFeatures = data
     ? FEATURE_META.map((f) => ({

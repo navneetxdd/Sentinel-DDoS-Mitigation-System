@@ -1,0 +1,168 @@
+{
+  "model": "random_forest",
+  "note": "Global importances from tree model. Per-attack SHAP requires off-path analysis endpoint.",
+  "global_importances": [
+    {
+      "name": "avg_packet_size",
+      "importance": 0.46290420463922816
+    },
+    {
+      "name": "avg_iat_us",
+      "importance": 0.21942552489490083
+    },
+    {
+      "name": "rst_ratio",
+      "importance": 0.0706957757560863
+    },
+    {
+      "name": "src_packets_per_second",
+      "importance": 0.05560633753141303
+    },
+    {
+      "name": "syn_ratio",
+      "importance": 0.04950280093682454
+    },
+    {
+      "name": "stddev_packet_size",
+      "importance": 0.0471791568765982
+    },
+    {
+      "name": "packets_per_second",
+      "importance": 0.03422292753136053
+    },
+    {
+      "name": "fin_ratio",
+      "importance": 0.023987514510807426
+    },
+    {
+      "name": "dns_query_count",
+      "importance": 0.016277278504449003
+    },
+    {
+      "name": "bytes_per_second",
+      "importance": 0.009341335555200022
+    },
+    {
+      "name": "unique_src_ports",
+      "importance": 0.004269780143829039
+    },
+    {
+      "name": "unique_dst_ports",
+      "importance": 0.003115313237755257
+    },
+    {
+      "name": "http_request_count",
+      "importance": 0.002793621298230644
+    },
+    {
+      "name": "src_total_flows",
+      "importance": 0.0006784285833169295
+    },
+    {
+      "name": "dst_port_entropy",
+      "importance": 0.0
+    },
+    {
+      "name": "payload_byte_entropy",
+      "importance": 0.0
+    },
+    {
+      "name": "src_port_entropy",
+      "importance": 0.0
+    },
+    {
+      "name": "avg_ttl",
+      "importance": 0.0
+    },
+    {
+      "name": "stddev_ttl",
+      "importance": 0.0
+    },
+    {
+      "name": "stddev_iat_us",
+      "importance": 0.0
+    }
+  ],
+  "per_class_attack_importance": [
+    {
+      "name": "src_packets_per_second",
+      "attack_recall_importance": 0.0012136992060102214
+    },
+    {
+      "name": "avg_iat_us",
+      "attack_recall_importance": 0.0009085792938847334
+    },
+    {
+      "name": "fin_ratio",
+      "attack_recall_importance": 0.0007492388953303694
+    },
+    {
+      "name": "syn_ratio",
+      "attack_recall_importance": 0.0004610700894340791
+    },
+    {
+      "name": "packets_per_second",
+      "attack_recall_importance": 0.0003559732308130818
+    },
+    {
+      "name": "dns_query_count",
+      "attack_recall_importance": 4.7463097441746704e-05
+    },
+    {
+      "name": "http_request_count",
+      "attack_recall_importance": 3.729243370427978e-05
+    },
+    {
+      "name": "dst_port_entropy",
+      "attack_recall_importance": 0.0
+    },
+    {
+      "name": "payload_byte_entropy",
+      "attack_recall_importance": 0.0
+    },
+    {
+      "name": "unique_dst_ports",
+      "attack_recall_importance": 0.0
+    },
+    {
+      "name": "src_port_entropy",
+      "attack_recall_importance": 0.0
+    },
+    {
+      "name": "avg_ttl",
+      "attack_recall_importance": 0.0
+    },
+    {
+      "name": "stddev_ttl",
+      "attack_recall_importance": 0.0
+    },
+    {
+      "name": "stddev_iat_us",
+      "attack_recall_importance": 0.0
+    },
+    {
+      "name": "bytes_per_second",
+      "attack_recall_importance": -3.390221245809973e-06
+    },
+    {
+      "name": "unique_src_ports",
+      "attack_recall_importance": -3.390221245809973e-06
+    },
+    {
+      "name": "src_total_flows",
+      "attack_recall_importance": -3.390221245809973e-06
+    },
+    {
+      "name": "stddev_packet_size",
+      "attack_recall_importance": -0.0007729704440511501
+    },
+    {
+      "name": "avg_packet_size",
+      "attack_recall_importance": -0.005248062488557951
+    },
+    {
+      "name": "rst_ratio",
+      "attack_recall_importance": -0.008607771743183945
+    }
+  ]
+}

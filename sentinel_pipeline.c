@@ -1516,7 +1516,8 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
     else if (strcmp(cmd, "simulate_ddos") == 0 && c->ws) {
         ws_activity_t wa;
         wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
-        wa.src_ip = htonl(0xC0A80101);  /* 192.168.1.1 */
+        const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
+        wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80101);  /* 192.168.1.1 */
         wa.threat_score = 0.92;
         wa.enforced = 0;
         snprintf(wa.action, sizeof(wa.action), "DETECTED");
@@ -1529,7 +1530,8 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
     else if (strcmp(cmd, "simulate_flash_crowd") == 0 && c->ws) {
         ws_activity_t wa;
         wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
-        wa.src_ip = htonl(0xC0A80102);  /* 192.168.1.2 */
+        const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
+        wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80102);  /* 192.168.1.2 */
         wa.threat_score = 0.45;
         wa.enforced = 0;
         snprintf(wa.action, sizeof(wa.action), "MONITOR");

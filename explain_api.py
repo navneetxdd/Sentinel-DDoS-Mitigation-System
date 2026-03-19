@@ -10,7 +10,7 @@ Usage:
 
 Endpoints:
     POST /shap
-        Body: {"samples": [[f1, f2, ..., f21], ...]}  # raw 21-feature vectors
+        Body: {"samples": [[f1, f2, ..., f20], ...]}  # raw 20-feature vectors
     Returns: {"contributions": [[{name, value}, ...], ...], "base_value": float}
 
   POST /analyze
@@ -49,7 +49,7 @@ try:
 except ImportError:
     shap = None
 
-NUM_FEATURES = 21
+NUM_FEATURES = 20
 FEATURE_NAMES = [
     "packets_per_second",
     "bytes_per_second",
@@ -71,7 +71,6 @@ FEATURE_NAMES = [
     "src_total_flows",
     "src_packets_per_second",
     "dns_query_count",
-    "chi_square_score",
 ]
 
 
@@ -86,7 +85,6 @@ ML_MINMAX_HIGH = np.array(
     [
         1e6, 1e9, 1.0, 1.0, 8.0, 8.0, 65535.0, 1500.0, 1000.0, 100.0,
         1.0, 8.0, 65535.0, 64.0, 16.0, 1e6, 1e6, 10000.0, 1e6, 1000.0,
-        1.0,
     ],
     dtype=np.float64,
 )

@@ -274,7 +274,7 @@ const SHAP_FEATURE_NAMES_20 = [
   "src_packets_per_second",
   "dns_query_count",
 ] as const;
-const SHAP_FEATURE_NAMES_21 = [...SHAP_FEATURE_NAMES_20, "chi_square_score"] as const;
+
 
 function generateRequestId(): string {
   try {
@@ -587,7 +587,7 @@ function useSentinelWebSocketState(): SentinelState {
 
   const requestShapContributions = useCallback(async () => {
     const fv = featureVector ?? [];
-    if (fv.length !== 20 && fv.length !== 21 && fv.length !== 22) {
+    if (fv.length < 20) {
       setShapError("No feature vector available. Wait for traffic and try again.");
       return;
     }
@@ -620,16 +620,10 @@ function useSentinelWebSocketState(): SentinelState {
         explainHealthRef.current = health;
       }
 
-      const expectedFeatureCount = health.feature_count === 20 || health.feature_count === 21 ? health.feature_count : 21;
-      const shapVectorBase = fv.length > 21 ? fv.slice(0, 21) : fv;
-      const shapVector =
-        expectedFeatureCount === 20
-          ? shapVectorBase.slice(0, 20)
-          : (shapVectorBase.length >= 21
-              ? shapVectorBase.slice(0, 21)
-              : [...shapVectorBase, 0.0]);
+      const expectedFeatureCount = health.feature_count ?? 20;
+      const shapVector = fv.slice(0, expectedFeatureCount);
 
-      const localFeatureNames = expectedFeatureCount === 20 ? SHAP_FEATURE_NAMES_20 : SHAP_FEATURE_NAMES_21;
+      const localFeatureNames = SHAP_FEATURE_NAMES_20;
       const localFeatureSchemaHash = await computeFeatureSchemaHash(localFeatureNames);
       if (health.feature_schema_hash && health.feature_schema_hash !== localFeatureSchemaHash) {
         setShapError(
