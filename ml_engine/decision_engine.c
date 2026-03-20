@@ -933,9 +933,8 @@ static ml_runtime_score_t score_ml_inference(const sentinel_feature_vector_t *f,
                                              double obs_factor,
                                              double max_isolation)
 {
-    ml_scratch_t scr;
     ml_runtime_score_t out;
-    double p = run_ml_inference(f, &scr);
+    double p = run_ml_inference(f);
     double raw_score;
     if (p <= 0.0) {
         raw_score = 0.0;

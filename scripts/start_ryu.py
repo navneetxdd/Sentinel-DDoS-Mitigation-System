@@ -2,10 +2,11 @@
 """Start a compatible Ryu or OS-Ken controller for Sentinel.
 
 Search order:
-1. repo-local .venv-controller manager binaries
-2. repo-local .venv manager binaries
-3. system manager binaries on PATH
-4. python -m fallbacks
+1. repo-local OS-Ken compatibility launcher (preferred)
+2. repo-local .venv-controller manager binaries
+3. repo-local .venv manager binaries
+4. system manager binaries on PATH
+5. python -m fallbacks
 
 If an OS-Ken source tree is present, it is injected into PYTHONPATH so patched
 apps restored from source can be imported.
@@ -16,6 +17,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +57,20 @@ def _detect_osken_source(repo_root: Path) -> Path | None:
 
 def _manager_candidates(repo_root: Path) -> list[ControllerRuntime]:
     candidates: list[ControllerRuntime] = []
+
+    # Prefer compatibility launcher for OS-Ken so WSGI/ofctl_rest starts reliably.
+    compat_launcher = repo_root / "scripts" / "osken_manager_compat.py"
+    if compat_launcher.is_file():
+        for env_name in (".venv-controller", ".venv"):
+            py_bin = repo_root / env_name / "bin" / "python"
+            if py_bin.is_file() and os.access(py_bin, os.X_OK):
+                candidates.append(
+                    ControllerRuntime(
+                        label=f"repo {env_name}/osken_manager_compat.py",
+                        argv=[str(py_bin), str(compat_launcher)],
+                        family="osken",
+                    )
+                )
 
     for env_name in (".venv-controller", ".venv"):
         bin_dir = repo_root / env_name / "bin"
@@ -103,9 +119,24 @@ def _controller_apps(family: str) -> list[str]:
     return ["os_ken.app.simple_switch_13", "os_ken.app.ofctl_rest"]
 
 
+def _runtime_supported(runtime: ControllerRuntime) -> bool:
+    """Return True when a runtime candidate is likely runnable in this env."""
+    # Binary managers were already existence-checked in _manager_candidates().
+    if len(runtime.argv) >= 3 and runtime.argv[1] == "-m":
+        module_name = runtime.argv[2]
+        root_package = module_name.split(".")[0]
+        return importlib.util.find_spec(root_package) is not None
+    return True
+
+
 def main() -> int:
     repo_root = _repo_root()
-    runtime = _manager_candidates(repo_root)[0]
+    runtimes = _manager_candidates(repo_root)
+    runtime = next((candidate for candidate in runtimes if _runtime_supported(candidate)), None)
+    if runtime is None:
+        print("[ERROR] No supported controller runtime was found.")
+        print("        Install Ryu/OS-Ken system-wide or in .venv-controller/.venv.")
+        return 1
     env = os.environ.copy()
 
     if runtime.family == "osken":

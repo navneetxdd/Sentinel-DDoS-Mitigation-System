@@ -20174,7 +20174,7 @@ static inline void sentinel_ml_scale_input(double input[20]) {
  * Wrapper for Sentinel 20-feature vector.
  * Returns probability of attack [0.0 - 1.0].
  */
-static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scratch_t *scr) {
+static inline double run_ml_inference(const sentinel_feature_vector_t *f) {
     double input[20];
     double output[2];
 
@@ -20200,7 +20200,7 @@ static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scr
     input[19] = (double)f->dns_query_count;
 
     sentinel_ml_scale_input(input);
-    score(input, output, scr);
+    score(input, output);
     return output[1];
 }
 

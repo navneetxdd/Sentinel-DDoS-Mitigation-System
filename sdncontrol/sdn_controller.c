@@ -328,16 +328,23 @@ static int rest_call(sdn_context_t *ctx, http_method_t method,
 
     switch (method) {
     case HTTP_GET:
+        /* Fully reset request state when reusing CURL handle between POST/GET. */
+        curl_easy_setopt(ctx->curl, CURLOPT_NOBODY, 0L);
+        curl_easy_setopt(ctx->curl, CURLOPT_UPLOAD, 0L);
         curl_easy_setopt(ctx->curl, CURLOPT_POST, 0L);
         curl_easy_setopt(ctx->curl, CURLOPT_HTTPGET, 1L);
-        curl_easy_setopt(ctx->curl, CURLOPT_CUSTOMREQUEST, NULL);
+        curl_easy_setopt(ctx->curl, CURLOPT_CUSTOMREQUEST, "GET");
         curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, NULL);
+        curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDSIZE, 0L);
         break;
     case HTTP_POST:
+        curl_easy_setopt(ctx->curl, CURLOPT_NOBODY, 0L);
+        curl_easy_setopt(ctx->curl, CURLOPT_UPLOAD, 0L);
         curl_easy_setopt(ctx->curl, CURLOPT_HTTPGET, 0L);
         curl_easy_setopt(ctx->curl, CURLOPT_POST, 1L);
-        curl_easy_setopt(ctx->curl, CURLOPT_CUSTOMREQUEST, NULL);
+        curl_easy_setopt(ctx->curl, CURLOPT_CUSTOMREQUEST, "POST");
         curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, body ? body : "{}");
+        curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDSIZE, -1L);
         break;
     }
 

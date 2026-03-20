@@ -1788,6 +1788,10 @@ int main(int argc, char **argv)
     }
 
     ws_context_t *ws = NULL;
+#ifdef __linux__
+    pthread_t health_listener_thread_id;
+    int health_listener_started = 0;
+#endif
     if (ws_port > 0) {
         ws_config_t ws_cfg = WS_CONFIG_DEFAULT;
         ws_cfg.port = ws_port;
@@ -1898,10 +1902,6 @@ int main(int argc, char **argv)
     int feedback_write_idx = 0;  /* main thread double-buffer index; never locks */
     pthread_t feedback_thread;
     int feedback_thread_started = 0;
-#ifdef __linux__
-    pthread_t health_listener_thread_id;
-    int health_listener_started = 0;
-#endif
     void *feedback_thread_arg[4];
     feedback_thread_arg[0] = fb;
     feedback_thread_arg[1] = de;

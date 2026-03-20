@@ -156,26 +156,27 @@ Use this when you want the most predictable path or when terminal spawning is un
 
 Start the stack in this order from separate terminals.
 
-Terminal 1, explain API:
+Terminal 1, SDN controller:
 
 ```bash
 cd /path/to/Sentinel-main
-source .venv/bin/activate
-python3 explain_api.py --host 127.0.0.1 --port 5001
+/path/to/Sentinel-main/.venv-controller/bin/python scripts/start_ryu.py
 ```
 
-Terminal 2, SDN controller:
-
-```bash
-cd /path/to/Sentinel-main
-python3 scripts/start_ryu.py
-```
-
-Terminal 3, backend pipeline:
+Terminal 2, backend pipeline:
 
 ```bash
 cd /path/to/Sentinel-main
 sudo ./sentinel_pipeline -i lo -q 0 -w 8765 --controller http://127.0.0.1:8080 -v
+```
+
+Terminal 3, explain API:
+
+```bash
+cd /path/to/Sentinel-main
+source .venv/bin/activate
+export GEMINI_API_KEY="<your_gemini_api_key>"
+python3 explain_api.py --host 127.0.0.1 --port 5001
 ```
 
 Terminal 4, frontend:
@@ -245,14 +246,16 @@ Sentinel expects a controller exposing `/stats/*` endpoints on `http://127.0.0.1
 
 The helper script `scripts/start_ryu.py` now searches for controller runtimes in this order:
 
-1. repo-local `.venv-controller/bin/ryu-manager`
-2. repo-local `.venv-controller/bin/osken-manager`
-3. repo-local `.venv/bin/ryu-manager`
-4. repo-local `.venv/bin/osken-manager`
-5. system `ryu-manager`
-6. system `osken-manager`
-7. `python -m ryu.cmd.manager`
-8. `python -m os_ken.cmd.manager`
+1. repo-local compatibility launcher: `scripts/osken_manager_compat.py` via `.venv-controller/bin/python` (preferred)
+2. repo-local compatibility launcher via `.venv/bin/python`
+3. repo-local `.venv-controller/bin/ryu-manager`
+4. repo-local `.venv-controller/bin/osken-manager`
+5. repo-local `.venv/bin/ryu-manager`
+6. repo-local `.venv/bin/osken-manager`
+7. system `ryu-manager`
+8. system `osken-manager`
+9. `python -m ryu.cmd.manager`
+10. `python -m os_ken.cmd.manager`
 
 ### Recommended OS-Ken path on Kali
 
@@ -283,6 +286,13 @@ Quick controller health check:
 
 ```bash
 curl -s http://127.0.0.1:8080/stats/switches
+```
+
+If this endpoint does not respond, stop old controller instances and relaunch:
+
+```bash
+pkill -f 'osken-manager|os_ken.cmd.manager|start_ryu.py|osken_manager_compat.py' || true
+/path/to/Sentinel-main/.venv-controller/bin/python scripts/start_ryu.py
 ```
 
 ## Build Commands
@@ -332,6 +342,13 @@ make test
 Basic loopback run for local demos:
 
 ```bash
+sudo ./sentinel_pipeline -i lo -q 0 -w 8765 --controller http://127.0.0.1:8080 -v
+```
+
+If you rebuilt the project, restart the running pipeline so it picks up the new binary:
+
+```bash
+sudo pkill -f 'sentinel_pipeline -i lo -q 0 -w 8765 --controller http://127.0.0.1:8080 -v' || true
 sudo ./sentinel_pipeline -i lo -q 0 -w 8765 --controller http://127.0.0.1:8080 -v
 ```
 
@@ -655,6 +672,12 @@ WebSocket server listening:
 
 ```bash
 ss -ltn | grep 8765
+```
+
+All required local ports:
+
+```bash
+ss -ltn | egrep ':(5001|5173|8080|8765)\b'
 ```
 
 Frontend build health:

@@ -254,7 +254,7 @@ static int ws_handshake(ws_context_t *ctx, int fd, const char *request)
         char protocol_header[128];
         snprintf(protocol_header, sizeof(protocol_header), "Sec-WebSocket-Protocol: %s", ctx->cfg.api_key);
         if (!strstr(request, protocol_header)) {
-            LOG_WARN("[WS] Handshake failed: Missing or invalid API key in Sec-WebSocket-Protocol");
+            fprintf(stderr, "[WS] Handshake failed: Missing or invalid API key in Sec-WebSocket-Protocol\n");
             const char *fail = "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n";
             send(fd, fail, strlen(fail), MSG_NOSIGNAL);
             return -1;

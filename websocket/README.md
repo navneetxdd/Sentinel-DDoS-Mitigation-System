@@ -27,7 +27,7 @@ The React dashboard lives in `../frontend/`. To run:
 cd ../frontend
 npm install
 npm run dev
-# Open http://localhost:8080
+# Open http://localhost:5173
 ```
 
 The frontend connects to `ws://localhost:8765` automatically.
@@ -35,7 +35,7 @@ The frontend connects to `ws://localhost:8765` automatically.
 ## Architecture
 
 ```
-Pipeline (C) --> WebSocket Server (port 8765) --> React Frontend (port 8080)
+Pipeline (C) --> WebSocket Server (port 8765) --> React Frontend (port 5173)
      |                    |
      |              ws_update_*()
      |                    |
