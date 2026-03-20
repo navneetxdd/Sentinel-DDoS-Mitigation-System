@@ -353,8 +353,24 @@ static int rest_call(sdn_context_t *ctx, http_method_t method,
     curl_slist_free_all(headers);
 
     if (res != CURLE_OK) {
-        fprintf(stderr, "[sentinel-sdn] curl error: %s\n",
-                ctx->errbuf[0] ? ctx->errbuf : curl_easy_strerror(res));
+        static time_t last_curl_error_log = 0;
+        static unsigned int suppressed_curl_errors = 0;
+        const char *err_msg = ctx->errbuf[0] ? ctx->errbuf : curl_easy_strerror(res);
+        time_t now = time(NULL);
+        if (last_curl_error_log == 0 || (now - last_curl_error_log) >= 5) {
+            if (suppressed_curl_errors > 0) {
+                fprintf(stderr,
+                        "[sentinel-sdn] curl error: %s (and %u similar errors suppressed)\n",
+                        err_msg,
+                        suppressed_curl_errors);
+            } else {
+                fprintf(stderr, "[sentinel-sdn] curl error: %s\n", err_msg);
+            }
+            last_curl_error_log = now;
+            suppressed_curl_errors = 0;
+        } else {
+            suppressed_curl_errors++;
+        }
         return -1;
     }
 

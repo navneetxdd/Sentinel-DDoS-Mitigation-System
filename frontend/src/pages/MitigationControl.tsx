@@ -36,6 +36,11 @@ const ATTACK_TYPE_TO_PROTOCOL: Record<string, string> = {
   UNKNOWN: "-",
 };
 
+function formatThreatScore(value: unknown): string {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : "N/A";
+}
+
 const MitigationControl = () => {
   const ws = useSentinelWebSocket();
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -74,6 +79,7 @@ const MitigationControl = () => {
       else if (activity.enforced && actionLower.includes("rate")) action = "rate_limit";
 
       const protocol = ATTACK_TYPE_TO_PROTOCOL[activity.attack_type] ?? "-";
+      const threatScoreText = formatThreatScore(activity.threat_score);
       return {
         id: `${activity.timestamp}-${idx}`,
         timestamp: new Date(activity.timestamp * 1000).toLocaleString(),
@@ -81,7 +87,7 @@ const MitigationControl = () => {
         target: activity.src_ip,
         attackType: activity.attack_type,
         protocol,
-        details: `${activity.attack_type} (${protocol}) — ${activity.reason} — threat: ${activity.threat_score.toFixed(2)}${activity.enforced ? "" : " [manual mode]"}`,
+        details: `${activity.attack_type} (${protocol}) — ${activity.reason} — threat: ${threatScoreText}${activity.enforced ? "" : " [manual mode]"}`,
         status: "completed" as const,
       };
     });
@@ -152,7 +158,7 @@ const MitigationControl = () => {
       timestamp: new Date().toISOString(),
       event: isBlock ? "block" : "rate_limit",
       sourceIp: first.src_ip,
-      message: `${first.action} — ${first.attack_type} (threat: ${first.threat_score.toFixed(2)})`,
+      message: `${first.action} — ${first.attack_type} (threat: ${formatThreatScore(first.threat_score)})`,
     });
   }, [mergedActivities, postAlertWebhook]);
 

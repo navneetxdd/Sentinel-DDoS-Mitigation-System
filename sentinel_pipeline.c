@@ -1848,6 +1848,9 @@ int main(int argc, char **argv)
             coarse_now_ns = (uint64_t)ts0.tv_sec * 1000000000ULL + ts0.tv_nsec;
     }
     uint32_t classifications_this_sec = 0;
+    uint32_t skipped_classifications_this_sec = 0;
+    const unsigned long max_classifications_per_sec =
+        parse_env_ul_bound("SENTINEL_MAX_CLASSIFICATIONS_PER_SEC", 2000, 100, 1000000);
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
         LOG_ERROR("curl_global_init failed");
@@ -1914,6 +1917,8 @@ int main(int argc, char **argv)
     }
 
     time_t last_gc = time(NULL);
+    time_t last_gc_log = last_gc;
+    uint32_t gc_evicted_accum = 0;
     time_t last_metrics = time(NULL);
     time_t last_top_sources = time(NULL);
     time_t last_feature_importance = time(NULL);
@@ -1958,7 +1963,16 @@ int main(int argc, char **argv)
         /* Liveness: GC every 1s so old flows are pruned and 10s rolling window is accurate (no ghost-flow leak). */
         if (now - last_gc >= 1) {
             int evicted = fe_gc(fe);
-            if (evicted > 0) LOG_INFO("GC: Evicted %d stale flows", evicted);
+            if (evicted > 0) {
+                gc_evicted_accum += (uint32_t)evicted;
+                if ((now - last_gc_log) >= 5 || evicted >= 1000) {
+                    LOG_INFO("GC: Evicted %u stale flows (last %lds)",
+                             gc_evicted_accum,
+                             (long)(now - last_gc_log));
+                    gc_evicted_accum = 0;
+                    last_gc_log = now;
+                }
+            }
             last_gc = now;
         }
 
@@ -1975,6 +1989,12 @@ int main(int argc, char **argv)
             wm.kernel_drops = total_blocked;
             wm.userspace_drops = total_rate_limited;
             ws_update_metrics(ws, &wm);
+
+            if (skipped_classifications_this_sec > 0) {
+                LOG_WARN("Classification backpressure active: skipped %u extracts in last second (cap=%lu/s)",
+                         skipped_classifications_this_sec,
+                         max_classifications_per_sec);
+            }
 
             ws_traffic_rate_t tr;
             tr.total_pps = period_tcp_pkts + period_udp_pkts + period_icmp_pkts + period_other_pkts;
@@ -2193,6 +2213,7 @@ int main(int argc, char **argv)
             last_rx_for_metrics = rx_packets;
             last_metrics = now;
             classifications_this_sec = 0;
+            skipped_classifications_this_sec = 0;
             period_tcp_pkts = period_udp_pkts = period_icmp_pkts = period_other_pkts = 0;
             period_tcp_bytes = period_udp_bytes = period_icmp_bytes = period_other_bytes = 0;
             period_bytes_total = 0;
@@ -2358,6 +2379,10 @@ int main(int argc, char **argv)
             sentinel_feature_vector_t fv;
             if (fe_should_extract(fe, coarse_now_ns) && fe_extract_last(fe, &fv) == 0) {
                 fe_mark_extracted(fe, coarse_now_ns);
+                if (classifications_this_sec >= max_classifications_per_sec) {
+                    skipped_classifications_this_sec++;
+                    continue;
+                }
                 sentinel_threat_assessment_t assessment;
                 if (de_classify(de, &fv, &assessment) == 0) {
                     g_last_feature_vector = fv;
@@ -2497,6 +2522,10 @@ int main(int argc, char **argv)
                 sentinel_feature_vector_t fv;
                 if (fe_should_extract(fe, coarse_now_ns) && fe_extract_last(fe, &fv) == 0) {
                     fe_mark_extracted(fe, coarse_now_ns);
+                    if (classifications_this_sec >= max_classifications_per_sec) {
+                        skipped_classifications_this_sec++;
+                        continue;
+                    }
                     sentinel_threat_assessment_t assessment;
                     if (de_classify(de, &fv, &assessment) == 0) {
                         g_last_feature_vector = fv;
