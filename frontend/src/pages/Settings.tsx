@@ -279,7 +279,7 @@ const Settings = () => {
             <div className="space-y-4">
               <SelectSetting
                 label="Model Version"
-                description="Benchmark focus in the UI; deployed runtime model remains Random Forest."
+                description="Benchmark focus in the UI; deployed runtime model is selected automatically from benchmark accuracy and latency constraints."
                 value={modelFocus}
                 onValueChange={setModelFocus}
                 options={modelOptions}

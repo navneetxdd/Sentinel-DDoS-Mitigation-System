@@ -30,6 +30,7 @@ import math
 import os
 import re
 import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -288,6 +289,7 @@ class ModelBenchmarkResult:
     validation_family_metrics: Dict[str, Dict[str, object]]
     dataset_test_metrics: Dict[str, Dict[str, object]]
     transfer_metrics: Dict[str, Dict[str, Dict[str, object]]]
+    inference_ms_per_sample: float
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -2306,6 +2308,30 @@ def evaluate_model_artifact(artifact: ModelArtifact, X: np.ndarray, y: np.ndarra
     return evaluate_predictions(y, predictions, scores)
 
 
+def measure_inference_latency_ms_per_sample(
+    artifact: ModelArtifact,
+    X_scaled: np.ndarray,
+    repeats: int = 3,
+    max_samples: int = 4096,
+) -> float:
+    if len(X_scaled) == 0:
+        return float("nan")
+
+    sample_count = min(len(X_scaled), max_samples)
+    sample = X_scaled[:sample_count]
+
+    # Warm up estimator internals before timing.
+    predict_with_artifact(artifact, sample)
+
+    started = time.perf_counter()
+    for _ in range(max(1, repeats)):
+        predict_with_artifact(artifact, sample)
+    elapsed = time.perf_counter() - started
+
+    total_predictions = float(max(1, repeats) * sample_count)
+    return (elapsed * 1000.0) / total_predictions
+
+
 def evaluate_model_by_family_artifact(
     artifact: ModelArtifact,
     X: np.ndarray,
@@ -3035,7 +3061,7 @@ def fit_dt_artifact(
             score_mode="probability",
             params=dict(params),
             training_note=rebalance_note,
-            exportable=False,
+            exportable=True,
         ),
         rebalance_note,
     )
@@ -3177,8 +3203,11 @@ def run_benchmark_suite(
         if training_note:
             print(f"[*] {training_note}")
 
-        fit_metrics = evaluate_model_artifact(final_artifact, scale_features(X_fit), y_fit)
-        test_metrics = evaluate_model_artifact(final_artifact, scale_features(X_test), y_test)
+        scaled_fit = scale_features(X_fit)
+        scaled_test = scale_features(X_test)
+        fit_metrics = evaluate_model_artifact(final_artifact, scaled_fit, y_fit)
+        test_metrics = evaluate_model_artifact(final_artifact, scaled_test, y_test)
+        inference_ms_per_sample = measure_inference_latency_ms_per_sample(final_artifact, scaled_test)
         dataset_test_metrics = evaluate_test_chunks_by_dataset_for_artifact(final_artifact, split_plan)
         transfer_metrics = evaluate_cross_dataset_transfer_for_artifact(model_name, params, split_plan)
         results[model_name] = ModelBenchmarkResult(
@@ -3191,6 +3220,7 @@ def run_benchmark_suite(
             validation_family_metrics=selection_summary["validation_family_metrics"],
             dataset_test_metrics=dataset_test_metrics,
             transfer_metrics=transfer_metrics,
+            inference_ms_per_sample=inference_ms_per_sample,
         )
 
     return results
@@ -3246,7 +3276,7 @@ def print_benchmark_result(result: ModelBenchmarkResult) -> None:
     print_cross_dataset_transfer("--- CROSS-DATASET TRANSFER CHECKS ---", result.transfer_metrics)
 
 
-def print_model_comparison_summary(results: Dict[str, ModelBenchmarkResult]) -> None:
+def print_model_comparison_summary(results: Dict[str, ModelBenchmarkResult], runtime_model_name: Optional[str] = None) -> None:
     if not results:
         return
     print("--- MODEL COMPARISON SUMMARY ---")
@@ -3255,14 +3285,73 @@ def print_model_comparison_summary(results: Dict[str, ModelBenchmarkResult]) -> 
         transfer_values = transfer_macro_f1_values(result.transfer_metrics)
         transfer_text = "n/a" if not transfer_values else f"{(sum(transfer_values) / len(transfer_values)) * 100:.2f}%"
         exported_text = " [exported]" if result.artifact.exportable else ""
+        runtime_text = " [runtime]" if runtime_model_name and model_name == runtime_model_name else ""
+        latency_text = (
+            "n/a"
+            if math.isnan(float(result.inference_ms_per_sample))
+            else f"{float(result.inference_ms_per_sample):.4f} ms/sample"
+        )
         print(
-            f"  {model_name}{exported_text}: "
+            f"  {model_name}{exported_text}{runtime_text}: "
             f"test macro-F1={float(result.test_metrics['macro_f1']) * 100:.2f}%, "
+            f"accuracy={float(result.test_metrics['accuracy']) * 100:.2f}%, "
             f"balanced-acc={float(result.test_metrics['balanced_accuracy']) * 100:.2f}%, "
+            f"latency={latency_text}, "
             f"worst-family macro-F1={float(dataset_summary['worst_macro_f1']) * 100:.2f}%, "
             f"mean transfer macro-F1={transfer_text}"
         )
     print("--------------------------------\n")
+
+
+def choose_runtime_model(results: Dict[str, ModelBenchmarkResult]) -> str:
+    exportable = [(name, result) for name, result in results.items() if result.artifact.exportable]
+    if not exportable:
+        raise RuntimeError("No exportable model is available for runtime deployment.")
+
+    latency_budget_ms = safe_float(os.environ.get("SENTINEL_RUNTIME_MAX_INFERENCE_MS", "0.20"), 0.20)
+    latency_budget_ms = max(0.001, latency_budget_ms)
+    accuracy_tie_epsilon = safe_float(os.environ.get("SENTINEL_RUNTIME_ACCURACY_TIE_EPS", "0.002"), 0.002)
+    accuracy_tie_epsilon = max(0.0, accuracy_tie_epsilon)
+
+    eligible = [
+        (name, result)
+        for name, result in exportable
+        if not math.isnan(float(result.inference_ms_per_sample))
+        and float(result.inference_ms_per_sample) <= latency_budget_ms
+    ]
+    pool = eligible if eligible else exportable
+
+    if not eligible:
+        print(
+            f"[!] No exportable model met latency budget ({latency_budget_ms:.4f} ms/sample). "
+            "Falling back to the fastest exportable model."
+        )
+        fastest = sorted(
+            pool,
+            key=lambda item: (
+                math.isnan(float(item[1].inference_ms_per_sample)),
+                float(item[1].inference_ms_per_sample),
+                -float(item[1].test_metrics["accuracy"]),
+            ),
+        )[0]
+        return fastest[0]
+
+    best_accuracy = max(float(result.test_metrics["accuracy"]) for _, result in pool)
+    near_best = [
+        (name, result)
+        for name, result in pool
+        if (best_accuracy - float(result.test_metrics["accuracy"])) <= accuracy_tie_epsilon
+    ]
+    selected = sorted(
+        near_best,
+        key=lambda item: (
+            float(item[1].inference_ms_per_sample),
+            -float(item[1].test_metrics["accuracy"]),
+            -float(item[1].test_metrics["macro_f1"]),
+            item[0],
+        ),
+    )[0]
+    return selected[0]
 
 
 def serialize_metrics(metrics: Dict[str, object]) -> Dict[str, object]:
@@ -3367,11 +3456,12 @@ def extract_per_class_attack_importance(
 
 def build_explainability_config(
     results: Dict[str, ModelBenchmarkResult],
+    runtime_model_name: str,
     X_test: np.ndarray,
     y_test: np.ndarray,
 ) -> Dict[str, object]:
     """Build explainability config with global and per-class importances for deployed model."""
-    deployed = results.get("random_forest")
+    deployed = results.get(runtime_model_name)
     if not deployed:
         deployed = results.get("xgboost") or next(iter(results.values()), None)
     if not deployed:
@@ -3424,13 +3514,14 @@ def export_benchmark_report(
     chunks: Sequence[DatasetChunk],
     split_plan: SplitPlan,
     results: Dict[str, ModelBenchmarkResult],
+    runtime_model_name: str,
     X_test: np.ndarray,
     y_test: np.ndarray,
 ) -> None:
     report = {
         "trainer_version": TRAINER_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "runtime_model": "random_forest",
+        "runtime_model": runtime_model_name,
         "feature_schema": {
             "runtime_feature_count": len(FEATURE_NAMES),
             "runtime_feature_names": list(FEATURE_NAMES),
@@ -3470,6 +3561,9 @@ def export_benchmark_report(
                 "mean_family_macro_f1": float(dataset_summary["mean_macro_f1"]),
                 "mean_transfer_macro_f1": None if not transfer_values else float(sum(transfer_values) / len(transfer_values)),
             },
+            "inference_ms_per_sample": None
+            if math.isnan(float(result.inference_ms_per_sample))
+            else float(result.inference_ms_per_sample),
         }
         per_class = extract_per_class_attack_importance(
             result.artifact, X_test, y_test, n_repeats=2
@@ -3506,7 +3600,7 @@ def export_benchmark_report(
             ])
     print(f"[*] Wrote model comparison: {comparison_path}")
 
-    explain_cfg = build_explainability_config(results, X_test, y_test)
+    explain_cfg = build_explainability_config(results, runtime_model_name, X_test, y_test)
     explain_paths = [
         os.path.join(script_dir, BENCHMARK_ARTIFACT_DIRS[0], EXPLAINABILITY_CONFIG_NAME),
         os.path.join(script_dir, *BENCHMARK_ARTIFACT_DIRS[1], EXPLAINABILITY_CONFIG_NAME),
@@ -3517,16 +3611,17 @@ def export_benchmark_report(
             handle.write("\n")
         print(f"[*] Wrote explainability config: {explain_path}")
 
-def export_model(clf: RandomForestClassifier) -> None:
+def export_model(estimator: Any, runtime_model_name: str) -> None:
     if m2c is None:
         print("[!] Skipping C export: m2cgen is not installed (pip install m2cgen).")
         return
 
-    code = m2c.export_to_c(clf)
+    code = m2c.export_to_c(estimator)
 
     c_header = """/*
  * AUTO-GENERATED MACHINE LEARNING MODEL
  * Generated by train_ml.py (scikit-learn + m2cgen).
+ * Runtime model: {runtime_model_name}
  * The model expects Sentinel's 20 engineered features after fixed min-max scaling.
  * Do not edit manually.
  */
@@ -3611,10 +3706,11 @@ static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scr
         os.makedirs(os.path.dirname(model_path), exist_ok=True)
         joblib.dump(  # nosec B301
             {
-                "estimator": clf,
+                "estimator": estimator,
                 "feature_names": FEATURE_NAMES,
                 "feature_schema_hash": compute_feature_schema_hash(FEATURE_NAMES),
                 "trainer_version": TRAINER_VERSION,
+                "runtime_model": runtime_model_name,
                 "scale": (ML_MINMAX_LOW, ML_MINMAX_HIGH),
             },
             model_path,
@@ -3681,19 +3777,26 @@ def train_and_export_model() -> None:
         if model_name in benchmark_results:
             print_benchmark_result(benchmark_results[model_name])
 
-    print_model_comparison_summary(benchmark_results)
-    export_benchmark_report(chunks, split_plan, benchmark_results, X_test, y_test)
+    runtime_model_name = choose_runtime_model(benchmark_results)
+    print_model_comparison_summary(benchmark_results, runtime_model_name=runtime_model_name)
+    export_benchmark_report(chunks, split_plan, benchmark_results, runtime_model_name, X_test, y_test)
 
-    deployed_result = benchmark_results.get("random_forest")
+    deployed_result = benchmark_results.get(runtime_model_name)
     if deployed_result is None:
-        print("[!] RandomForest benchmark failed; aborting C export because the deployed runtime model is unavailable.")
+        print("[!] Runtime model selection failed; aborting C export because no deployed model is available.")
         return
 
-    print("[*] Deployed runtime model remains RandomForest for C export compatibility.")
+    runtime_accuracy = float(deployed_result.test_metrics["accuracy"]) * 100.0
+    runtime_latency = deployed_result.inference_ms_per_sample
+    runtime_latency_text = "n/a" if math.isnan(float(runtime_latency)) else f"{float(runtime_latency):.4f} ms/sample"
+    print(
+        f"[*] Runtime model selected: {runtime_model_name} "
+        f"(test accuracy={runtime_accuracy:.2f}%, latency={runtime_latency_text})."
+    )
     print_feature_importance(deployed_result.artifact.estimator)
 
     print("[*] Exporting model to raw C code via m2cgen...")
-    export_model(deployed_result.artifact.estimator)
+    export_model(deployed_result.artifact.estimator, runtime_model_name)
 
 
 if __name__ == "__main__":
