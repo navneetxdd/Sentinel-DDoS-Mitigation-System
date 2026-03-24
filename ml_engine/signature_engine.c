@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <errno.h>
+#include <limits.h>
 #include <arpa/inet.h>
 #include "signature_engine.h"
 
@@ -47,31 +49,45 @@ static uint16_t parse_hex_payload(const char *in, uint8_t *out, uint16_t max_len
 }
 
 static int parse_port_proto(const char *value, uint8_t *proto, uint16_t *port) {
-    char buf[128];
-    strncpy(buf, value, sizeof(buf)-1);
-    buf[sizeof(buf)-1] = '\0';
-    
-    char *tok = strtok(buf, "\t ");
-    if (!tok) return 0;
-    *proto = (uint8_t)atoi(tok);
-    
-    tok = strtok(NULL, "\t ");
-    if (!tok) return 0;
-    *port = (uint16_t)atoi(tok);
-    
+    if (!value || !proto || !port) return 0;
+
+    const char *p = value;
+    while (*p && isspace((unsigned char)*p)) p++;
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long proto_ul = strtoul(p, &end, 10);
+    if (errno != 0 || end == p || proto_ul > UCHAR_MAX) return 0;
+
+    p = end;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p == '\0') return 0;
+
+    errno = 0;
+    unsigned long port_ul = strtoul(p, &end, 10);
+    if (errno != 0 || end == p || port_ul > USHRT_MAX) return 0;
+
+    while (*end && isspace((unsigned char)*end)) end++;
+    if (*end != '\0') return 0;
+
+    *proto = (uint8_t)proto_ul;
+    *port = (uint16_t)port_ul;
     return 1;
 }
 
 static void sig_parse_json_line(sig_context_t *ctx, const char *line) {
     if (!ctx || !line || ctx->count >= MAX_SIGNATURES) return;
     
-    const char *q1, *q2, *q3, *q4;
+    const char *q1, *q2, *q3, *q4, *colon;
     q1 = strchr(line, '"');
     if (!q1) return;
     q2 = strchr(q1 + 1, '"');
     if (!q2) return;
-    
-    q3 = strchr(q2 + 1, '"');
+
+    colon = strchr(q2 + 1, ':');
+    if (!colon) return;
+
+    q3 = strchr(colon + 1, '"');
     if (!q3) return;
     q4 = strchr(q3 + 1, '"');
     if (!q4) return;
@@ -92,11 +108,9 @@ static void sig_parse_json_line(sig_context_t *ctx, const char *line) {
     memcpy(value, q3 + 1, val_len);
     value[val_len] = '\0';
     
-    if (strstr(value, "\t\t") || (isdigit(value[0]) && strchr(value, ' '))) {
-        if (parse_port_proto(value, &sig->protocol, &sig->port)) {
-            sig->type = SIG_TYPE_PORT_PROTO;
-            sig->threat_boost = 0.50; /* Base boost for known reflection port patterns */
-        }
+    if (parse_port_proto(value, &sig->protocol, &sig->port)) {
+        sig->type = SIG_TYPE_PORT_PROTO;
+        sig->threat_boost = 0.50; /* Base boost for known reflection port patterns */
     } else {
         sig->payload_len = parse_hex_payload(value, sig->payload, MAX_SIG_PAYLOAD);
         if (sig->payload_len > 0) {
@@ -155,10 +169,12 @@ void sig_match_packet(sig_context_t *ctx, const fe_packet_t *pkt, sig_match_resu
         }
         
         if (matched) {
-            out->matched = 1;
-            strncpy(out->name, sig->name, sizeof(out->name)-1);
-            out->boost = sig->threat_boost;
-            return; /* first match wins for efficiency */
+            /* Keep the strongest match to avoid weaker early signatures masking stronger ones. */
+            if (!out->matched || sig->threat_boost > out->boost) {
+                out->matched = 1;
+                strncpy(out->name, sig->name, sizeof(out->name)-1);
+                out->boost = sig->threat_boost;
+            }
         }
     }
 }

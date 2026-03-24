@@ -2,6 +2,7 @@
 #define SENTINEL_PLATFORM_COMPAT_H
 
 #include <time.h>
+#include <stdatomic.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -25,14 +26,14 @@ static inline int sentinel_clock_gettime_compat(int clock_id, struct timespec *t
 
     if (clock_id == CLOCK_MONOTONIC) {
         static LARGE_INTEGER freq;
-        static int freq_initialized = 0;
+        static atomic_int freq_initialized = 0;
         LARGE_INTEGER counter;
 
-        if (!freq_initialized) {
+        if (atomic_load_explicit(&freq_initialized, memory_order_acquire) == 0) {
             if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0) {
                 freq.QuadPart = 1000000;
             }
-            freq_initialized = 1;
+            atomic_store_explicit(&freq_initialized, 1, memory_order_release);
         }
 
         if (!QueryPerformanceCounter(&counter)) {

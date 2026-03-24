@@ -6,9 +6,6 @@ export function HealthSummaryBar() {
   const pipeline = ws.connected ? 1 : 0;
   const explainApi = ws.explainApiReachable === true ? 1 : ws.explainApiReachable === false ? 0 : -1;
   const sdn = ws.mitigationStatus?.sdn_connected ?? -1;
-  const gatekeeper = ws.integrationStatus?.gatekeeper_enabled
-    ? (ws.integrationStatus?.gatekeeper_connected ?? -1)
-    : -1;
 
   const label = (name: string, status: number) => {
     const s = status === 1 ? "✓" : status === 0 ? "✗" : "−";
@@ -25,8 +22,6 @@ export function HealthSummaryBar() {
       {label("Explain API", explainApi)}
       <span className="text-muted-foreground/50">|</span>
       {label("SDN", sdn)}
-      <span className="text-muted-foreground/50">|</span>
-      {label("Gatekeeper", gatekeeper)}
       {parseErrors > 0 && (
         <>
           <span className="text-muted-foreground/50">|</span>

@@ -58,11 +58,14 @@ def _detect_osken_source(repo_root: Path) -> Path | None:
 def _manager_candidates(repo_root: Path) -> list[ControllerRuntime]:
     candidates: list[ControllerRuntime] = []
 
-    # Prefer compatibility launcher for OS-Ken so WSGI/ofctl_rest starts reliably.
+    # 1. TOP PRIORITY: Local compatibility launcher (always preferred for OS-Ken REST port)
     compat_launcher = repo_root / "scripts" / "osken_manager_compat.py"
     if compat_launcher.is_file():
-        for env_name in (".venv-controller", ".venv"):
-            py_bin = repo_root / env_name / "bin" / "python"
+        for env_name in (".venv-wsl", ".venv-controller", ".venv"):
+            py_bin = repo_root / env_name / "bin" / "python3"
+            if not py_bin.exists():
+                py_bin = repo_root / env_name / "bin" / "python"
+            
             if py_bin.is_file() and os.access(py_bin, os.X_OK):
                 candidates.append(
                     ControllerRuntime(
@@ -72,7 +75,24 @@ def _manager_candidates(repo_root: Path) -> list[ControllerRuntime]:
                     )
                 )
 
-    for env_name in (".venv-controller", ".venv"):
+    # 2. Module fallbacks for the current interpreter (if it already has ryu/os_ken)
+    for module_pkg, family in (("os_ken", "osken"), ("ryu", "ryu")):
+        try:
+            # We use a primitive check to avoid triggering the parent package's __init__
+            # if it's broken or tries to import missing submodules.
+            if importlib.util.find_spec(module_pkg) is not None:
+                candidates.append(
+                    ControllerRuntime(
+                        label=f"current interpreter -m {module_pkg}.cmd.manager",
+                        argv=[sys.executable, "-m", f"{module_pkg}.cmd.manager"],
+                        family=family,
+                    )
+                )
+        except Exception:
+            pass
+
+    # 3. Virtualenv-binaries
+    for env_name in (".venv-wsl", ".venv-controller", ".venv"):
         bin_dir = repo_root / env_name / "bin"
         for executable, family in (("ryu-manager", "ryu"), ("osken-manager", "osken")):
             manager = bin_dir / executable
@@ -113,10 +133,22 @@ def _manager_candidates(repo_root: Path) -> list[ControllerRuntime]:
     return candidates
 
 
-def _controller_apps(family: str) -> list[str]:
-    if family == "ryu":
-        return ["ryu.app.simple_switch_13", "ryu.app.ofctl_rest"]
-    return ["os_ken.app.simple_switch_13", "os_ken.app.ofctl_rest"]
+def _controller_apps(family: str, repo_root: Path) -> list[str]:
+    # Prioritize local apps in scripts/sdn_apps/ if they exist.
+    local_sdn_dir = repo_root / "scripts" / "sdn_apps"
+    apps = []
+    
+    if (local_sdn_dir / "simple_switch_13.py").is_file():
+        apps.append("scripts.sdn_apps.simple_switch_13")
+    else:
+        apps.append("ryu.app.simple_switch_13" if family == "ryu" else "os_ken.app.simple_switch_13")
+        
+    if (local_sdn_dir / "ofctl_rest.py").is_file():
+        apps.append("scripts.sdn_apps.ofctl_rest")
+    else:
+        apps.append("ryu.app.ofctl_rest" if family == "ryu" else "os_ken.app.ofctl_rest")
+        
+    return apps
 
 
 def _runtime_supported(runtime: ControllerRuntime) -> bool:
@@ -125,14 +157,26 @@ def _runtime_supported(runtime: ControllerRuntime) -> bool:
     if len(runtime.argv) >= 3 and runtime.argv[1] == "-m":
         module_name = runtime.argv[2]
         root_package = module_name.split(".")[0]
-        return importlib.util.find_spec(root_package) is not None
+        try:
+            return importlib.util.find_spec(root_package) is not None
+        except Exception:
+            return False
     return True
 
 
 def main() -> int:
     repo_root = _repo_root()
     runtimes = _manager_candidates(repo_root)
-    runtime = next((candidate for candidate in runtimes if _runtime_supported(candidate)), None)
+    print(f"[DEBUG] Found {len(runtimes)} candidates")
+    for r in runtimes:
+        print(f"[DEBUG] Checking candidate: {r.label} (argv: {r.argv})")
+        if _runtime_supported(r):
+            runtime = r
+            print(f"[DEBUG] -> Accepted: {r.label}")
+            break
+        else:
+            print(f"[DEBUG] -> Rejected (not supported in this env)")
+    
     if runtime is None:
         print("[ERROR] No supported controller runtime was found.")
         print("        Install Ryu/OS-Ken system-wide or in .venv-controller/.venv.")
@@ -148,7 +192,7 @@ def main() -> int:
             _prepend_pythonpath(env, source_path)
             print(f"[INFO] Using OS-Ken source tree: {source_path}")
 
-    argv = runtime.argv + _controller_apps(runtime.family)
+    argv = runtime.argv + _controller_apps(runtime.family, repo_root)
     print(f"[INFO] Starting controller via {runtime.label}")
     print(f"[INFO] Loading apps: {argv[len(runtime.argv):]}")
 

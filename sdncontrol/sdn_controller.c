@@ -24,6 +24,8 @@
 #include <stddef.h>
 #include <time.h>
 #include <inttypes.h>
+#include <errno.h>
+#include <limits.h>
 #include <unistd.h>
 #include <stdatomic.h>
 #include <curl/curl.h>
@@ -188,6 +190,19 @@ static uint64_t parse_dpid(const char *s, uint64_t fallback)
     unsigned long long v = strtoull(s, &end, 0);
     if (end == s) return fallback;
     return (uint64_t)v;
+}
+
+static int parse_table_id(const char *s, int fallback)
+{
+    if (!s || !*s) return fallback;
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long v = strtoul(s, &end, 10);
+    if (errno != 0 || end == s || (end && *end != '\0') || v > UCHAR_MAX)
+        return fallback;
+
+    return (int)v;
 }
 
 /* Fast FNV-1a hash for internal indexing */
@@ -504,7 +519,7 @@ static int build_flow_json(uint64_t dpid, const sentinel_sdn_rule_t *rule,
     uint64_t cookie = SENTINEL_COOKIE_PREFIX | (uint64_t)rule->rule_id;
 
     /* Ryu ofctl_rest: Sentinel Droplist rules as high-priority overrides (table 0, priority 65535) */
-    int table_int = (rule->table_id[0] != '\0') ? atoi(rule->table_id) : 0;
+    int table_int = parse_table_id(rule->table_id, 0);
     uint32_t priority = (rule->priority != 0) ? rule->priority : 65535;
 
     /* ---- assemble the full JSON ---- */
@@ -938,7 +953,18 @@ int sdn_remove_rules_for_src(sdn_context_t *ctx, uint32_t src_ip)
     }
     pthread_mutex_unlock(&ctx->meter_track_mutex);
 
-    for (uint32_t j = 0; j < n_to_delete; j++) {
+    /* Bound cleanup work so a large source history cannot stall the pipeline thread. */
+    uint32_t max_meter_deletes = 8;
+    const char *limit_env = getenv("SENTINEL_SDN_MAX_METER_DELETES_PER_CLEANUP");
+    if (limit_env && *limit_env) {
+        char *end = NULL;
+        unsigned long parsed = strtoul(limit_env, &end, 10);
+        if (end && *end == '\0' && parsed <= SDN_METER_TRACK_MAX)
+            max_meter_deletes = (uint32_t)parsed;
+    }
+
+    uint32_t delete_count = (n_to_delete < max_meter_deletes) ? n_to_delete : max_meter_deletes;
+    for (uint32_t j = 0; j < delete_count; j++) {
         char meter_body[256];
         if (build_meter_delete_json(dpid, rule_ids[j], meter_body, sizeof(meter_body)) == 0) {
             resp_buf_t mresp = {0};

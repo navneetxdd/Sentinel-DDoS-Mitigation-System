@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <endian.h>
+#include <ctype.h>
 #include <openssl/sha.h>
 #include <stdatomic.h>
 
@@ -242,6 +243,79 @@ static int json_append(char *buf, size_t cap, size_t *used, const char *fmt, ...
     return 0;
 }
 
+static size_t json_escape_string(const char *src, char *dst, size_t dst_sz)
+{
+    size_t written = 0;
+    if (!dst || dst_sz == 0) return 0;
+    if (!src) src = "";
+    while (*src && written + 1 < dst_sz) {
+        unsigned char ch = (unsigned char)(*src++);
+        if (ch == '"' || ch == '\\') {
+            if (written + 2 >= dst_sz) break;
+            dst[written++] = '\\';
+            dst[written++] = (char)ch;
+            continue;
+        }
+        if (ch >= 0x20) {
+            dst[written++] = (char)ch;
+        }
+    }
+    dst[written] = '\0';
+    return written;
+}
+
+static int ws_get_header_value(const char *request, const char *header_name, char *out, size_t out_sz)
+{
+    const char *line;
+    size_t name_len;
+    if (!request || !header_name || !out || out_sz == 0) return -1;
+    out[0] = '\0';
+    name_len = strlen(header_name);
+    line = request;
+    while (*line) {
+        const char *line_end = strstr(line, "\r\n");
+        const char *colon;
+        size_t value_len;
+        if (!line_end) break;
+        if (line_end == line) break;
+        colon = memchr(line, ':', (size_t)(line_end - line));
+        if (colon && (size_t)(colon - line) == name_len && strncasecmp(line, header_name, name_len) == 0) {
+            const char *value = colon + 1;
+            while (value < line_end && isspace((unsigned char)*value)) value++;
+            value_len = (size_t)(line_end - value);
+            while (value_len > 0 && isspace((unsigned char)value[value_len - 1])) value_len--;
+            if (value_len >= out_sz) value_len = out_sz - 1;
+            memcpy(out, value, value_len);
+            out[value_len] = '\0';
+            return 0;
+        }
+        line = line_end + 2;
+    }
+    return -1;
+}
+
+static int ws_protocol_has_token(const char *protocols, const char *token)
+{
+    const char *p = protocols;
+    size_t token_len;
+    if (!protocols || !token || !token[0]) return 0;
+    token_len = strlen(token);
+    while (*p) {
+        const char *start;
+        const char *end;
+        while (*p == ',' || isspace((unsigned char)*p)) p++;
+        if (!*p) break;
+        start = p;
+        while (*p && *p != ',') p++;
+        end = p;
+        while (end > start && isspace((unsigned char)end[-1])) end--;
+        if ((size_t)(end - start) == token_len && strncmp(start, token, token_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ============================================================================
  * WEBSOCKET HANDSHAKE
  * ============================================================================ */
@@ -251,9 +325,9 @@ static int ws_handshake(ws_context_t *ctx, int fd, const char *request)
     /* Production Hardening: Mandatory API-Key check via Sec-WebSocket-Protocol.
      * This is required because standard browser WebSocket APIs cannot send custom headers. */
     if (ctx->cfg.api_key[0] != '\0') {
-        char protocol_header[128];
-        snprintf(protocol_header, sizeof(protocol_header), "Sec-WebSocket-Protocol: %s", ctx->cfg.api_key);
-        if (!strstr(request, protocol_header)) {
+        char protocol_value[256];
+        if (ws_get_header_value(request, "Sec-WebSocket-Protocol", protocol_value, sizeof(protocol_value)) != 0 ||
+            !ws_protocol_has_token(protocol_value, ctx->cfg.api_key)) {
             fprintf(stderr, "[WS] Handshake failed: Missing or invalid API key in Sec-WebSocket-Protocol\n");
             const char *fail = "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n";
             send(fd, fail, strlen(fail), MSG_NOSIGNAL);
@@ -262,15 +336,7 @@ static int ws_handshake(ws_context_t *ctx, int fd, const char *request)
     }
 
     char key[256] = {0};
-    const char *p = strstr(request, "Sec-WebSocket-Key:");
-    if (!p) return -1;
-    
-    p += 18;
-    while (*p == ' ') p++;
-    
-    char *end = strchr(p, '\r');
-    if (!end || end - p > 255) return -1;
-    memcpy(key, p, end - p);
+    if (ws_get_header_value(request, "Sec-WebSocket-Key", key, sizeof(key)) != 0) return -1;
     
     /* Compute accept key: SHA1(key + GUID) */
     char combined[512];
@@ -376,19 +442,51 @@ static int ws_dequeue_raw(ws_context_t *ctx, ws_raw_msg_t *msg)
 
 /* Minimal JSON string extractor: finds "key":"value" and copies value.
  * Returns 0 on success, -1 if key not found. */
+static const char *json_find_key_value_start(const char *json, const char *key)
+{
+    const char *p = json;
+    size_t key_len;
+    if (!json || !key) return NULL;
+    key_len = strlen(key);
+    while (*p) {
+        if (*p == '"') {
+            const char *kstart = ++p;
+            while (*p && (*p != '"' || p[-1] == '\\')) p++;
+            if (!*p) break;
+            if ((size_t)(p - kstart) == key_len && strncmp(kstart, key, key_len) == 0) {
+                const char *q = p + 1;
+                while (*q && isspace((unsigned char)*q)) q++;
+                if (*q != ':') {
+                    p++;
+                    continue;
+                }
+                q++;
+                while (*q && isspace((unsigned char)*q)) q++;
+                return q;
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
 static int json_extract_string(const char *json, const char *key, char *out, size_t out_sz)
 {
-    char needle[128];
-    snprintf(needle, sizeof(needle), "\"%s\":", key);
-    const char *p = strstr(json, needle);
-    if (!p) return -1;
-    p += strlen(needle);
-    while (*p == ' ') p++;
+    const char *p = json_find_key_value_start(json, key);
+    size_t i = 0;
+    if (!p || !out || out_sz == 0) return -1;
     if (*p != '"') return -1;
     p++;
-    size_t i = 0;
-    while (*p && *p != '"' && i < out_sz - 1)
+    while (*p && i < out_sz - 1) {
+        if (*p == '"') break;
+        if (*p == '\\' && p[1]) {
+            p++;
+            out[i++] = *p++;
+            continue;
+        }
         out[i++] = *p++;
+    }
+    if (*p != '"') return -1;
     out[i] = '\0';
     return 0;
 }
@@ -396,12 +494,8 @@ static int json_extract_string(const char *json, const char *key, char *out, siz
 /* Minimal JSON unsigned extractor: finds "key":123 and parses decimal value. */
 static int json_extract_uint(const char *json, const char *key, uint32_t *out)
 {
-    char needle[128];
-    snprintf(needle, sizeof(needle), "\"%s\":", key);
-    const char *p = strstr(json, needle);
+    const char *p = json_find_key_value_start(json, key);
     if (!p || !out) return -1;
-    p += strlen(needle);
-    while (*p == ' ') p++;
     errno = 0;
     char *endptr = NULL;
     unsigned long v = strtoul(p, &endptr, 10);
@@ -424,7 +518,14 @@ static void ws_handle_command_json(ws_context_t *ctx, const char *json)
         json_extract_string(json, "value", arg, sizeof(arg));
 
     /* Production Hardening: Input Sanitization (IP validation) */
-    if (arg[0] != '\0' && (strstr(cmd, "ip") || strstr(cmd, "whitelist"))) {
+    if (arg[0] != '\0' && (
+        strcmp(cmd, "block_ip") == 0 ||
+        strcmp(cmd, "unblock_ip") == 0 ||
+        strcmp(cmd, "whitelist_ip") == 0 ||
+        strcmp(cmd, "remove_whitelist") == 0 ||
+        strcmp(cmd, "clear_rate_limit") == 0 ||
+        strcmp(cmd, "block_ip_port") == 0
+    )) {
         /* block_ip_port accepts "ip:port"; validate IP part only in that case */
         int skip_strict = (strcmp(cmd, "block_ip_port") == 0);
         if (!skip_strict) {
@@ -731,12 +832,19 @@ flush_phase:
                         "\"volume_weight\":%.3f,\"entropy_weight\":%.3f,\"protocol_weight\":%.3f,\"behavioral_weight\":%.3f,"
                         "\"ml_weight\":%.3f,\"l7_weight\":%.3f,\"anomaly_weight\":%.3f,\"chi_square_weight\":%.3f,\"fanin_weight\":%.3f,"
                         "\"signature_weight\":%.3f,\"avg_threat_score\":%.3f,\"avg_fanin_score\":%.3f,\"avg_signature_score\":%.3f,"
+                        "\"avg_score_volume\":%.3f,\"avg_score_entropy\":%.3f,\"avg_score_protocol\":%.3f,\"avg_score_behavioral\":%.3f,"
+                        "\"avg_score_ml\":%.3f,\"avg_score_l7\":%.3f,\"avg_score_anomaly\":%.3f,\"avg_score_chi_square\":%.3f,"
+                        "\"avg_score_fanin\":%.3f,\"avg_score_signature\":%.3f,"
                         "\"detections_last_10s\":%u,"
                         "\"policy_arm\":%u,\"policy_updates\":%lu,\"policy_last_reward\":%.3f}}",
                         (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         f->volume_weight, f->entropy_weight, f->protocol_weight, f->behavioral_weight,
                         f->ml_weight, f->l7_weight, f->anomaly_weight, f->chi_square_weight, f->fanin_weight,
-                        f->signature_weight, f->avg_threat_score, f->avg_fanin_score, f->avg_signature_score, f->detections_last_10s,
+                        f->signature_weight, f->avg_threat_score, f->avg_fanin_score, f->avg_signature_score,
+                        f->avg_score_volume, f->avg_score_entropy, f->avg_score_protocol, f->avg_score_behavioral,
+                        f->avg_score_ml, f->avg_score_l7, f->avg_score_anomaly, f->avg_score_chi_square,
+                        f->avg_score_fanin, f->avg_score_signature,
+                        f->detections_last_10s,
                         f->policy_arm, (unsigned long)f->policy_updates, f->policy_last_reward);
                     break;
                 }
@@ -784,90 +892,31 @@ flush_phase:
                 }
                 case WS_MSG_TYPE_MITIGATION_STATUS: {
                     ws_mitigation_status_t *s = &raw_msg.data.mitigation_status;
-                    /* JSON-escape sdn_last_error: " -> \", \ -> \\ */
                     char err_esc[WS_SDN_LAST_ERROR_MAX * 2 + 1];
-                    {
-                        const char *src = s->sdn_last_error;
-                        char *dst = err_esc;
-                        size_t remain = sizeof(err_esc) - 1;
-                        while (*src && remain > 1) {
-                            if (*src == '"') {
-                                *dst++ = '\\'; *dst++ = '"';
-                                remain -= 2;
-                            } else if (*src == '\\') {
-                                *dst++ = '\\'; *dst++ = '\\';
-                                remain -= 2;
-                            } else if ((unsigned char)*src >= 0x20) {
-                                *dst++ = *src;
-                                remain--;
-                            }
-                            src++;
-                        }
-                        *dst = '\0';
-                    }
+                    char mode_esc[WS_DATAPLANE_MODE_MAX * 2 + 1];
+                    json_escape_string(s->sdn_last_error, err_esc, sizeof(err_esc));
+                    json_escape_string(s->dataplane_mode, mode_esc, sizeof(mode_esc));
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"schema_version\":%u,\"type\":\"mitigation_status\",\"data\":{"
                         "\"total_blocked\":%u,\"total_rate_limited\":%u,\"total_monitored\":%u,\"total_whitelisted\":%u,"
                         "\"kernel_verdict_cache_hits\":%lu,\"kernel_verdict_cache_misses\":%lu,\"active_sdn_rules\":%u,"
-                        "\"auto_mitigation_enabled\":%s,\"kernel_dropping_enabled\":%s,\"sdn_connected\":%d,"
+                        "\"auto_mitigation_enabled\":%s,\"kernel_dropping_enabled\":%s,\"dataplane_mode\":\"%s\",\"sdn_connected\":%d,"
                         "\"sdn_last_error\":\"%s\"}}",
                         (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         s->total_blocked, s->total_rate_limited, s->total_monitored, s->total_whitelisted,
                         (unsigned long)s->kernel_verdict_cache_hits, (unsigned long)s->kernel_verdict_cache_misses,
                         s->active_sdn_rules, s->auto_mitigation_enabled ? "true" : "false",
-                        (s->kernel_dropping_enabled != 0) ? "true" : "false", s->sdn_connected, err_esc);
+                        (s->kernel_dropping_enabled != 0) ? "true" : "false", mode_esc, s->sdn_connected, err_esc);
                     break;
                 }
                 case WS_MSG_TYPE_INTEGRATION_STATUS: {
                     ws_integration_status_t *s = &raw_msg.data.integration_status;
                     char profile_esc[WS_INTEGRATION_PROFILE_MAX * 2 + 1];
-                    char gatekeeper_err_esc[WS_GATEKEEPER_LAST_ERROR_MAX * 2 + 1];
-                    {
-                        const char *src = s->profile;
-                        char *dst = profile_esc;
-                        size_t remain = sizeof(profile_esc) - 1;
-                        while (*src && remain > 1) {
-                            if (*src == '"') {
-                                *dst++ = '\\'; *dst++ = '"';
-                                remain -= 2;
-                            } else if (*src == '\\') {
-                                *dst++ = '\\'; *dst++ = '\\';
-                                remain -= 2;
-                            } else if ((unsigned char)*src >= 0x20) {
-                                *dst++ = *src;
-                                remain--;
-                            }
-                            src++;
-                        }
-                        *dst = '\0';
-                    }
-                    {
-                        const char *src = s->gatekeeper_last_error;
-                        char *dst = gatekeeper_err_esc;
-                        size_t remain = sizeof(gatekeeper_err_esc) - 1;
-                        while (*src && remain > 1) {
-                            if (*src == '"') {
-                                *dst++ = '\\'; *dst++ = '"';
-                                remain -= 2;
-                            } else if (*src == '\\') {
-                                *dst++ = '\\'; *dst++ = '\\';
-                                remain -= 2;
-                            } else if ((unsigned char)*src >= 0x20) {
-                                *dst++ = *src;
-                                remain--;
-                            }
-                            src++;
-                        }
-                        *dst = '\0';
-                    }
+                    json_escape_string(s->profile, profile_esc, sizeof(profile_esc));
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"schema_version\":%u,\"type\":\"integration_status\",\"data\":{"
                         "\"intel_feed_enabled\":%s,\"model_extension_enabled\":%s,\"controller_extension_enabled\":%s,"
                         "\"signature_feed_enabled\":%s,\"dataplane_extension_enabled\":%s,"
-                        "\"gatekeeper_enabled\":%s,\"gatekeeper_connected\":%d,"
-                        "\"gatekeeper_failure_count\":%u,\"gatekeeper_failure_threshold\":%u,"
-                        "\"gatekeeper_circuit_open\":%s,\"gatekeeper_next_retry_sec\":%u,"
-                        "\"gatekeeper_last_error\":\"%s\","
                         "\"profile\":\"%s\"}}",
                         (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         s->intel_feed_enabled ? "true" : "false",
@@ -875,13 +924,6 @@ flush_phase:
                         s->controller_extension_enabled ? "true" : "false",
                         s->signature_feed_enabled ? "true" : "false",
                         s->dataplane_extension_enabled ? "true" : "false",
-                        s->gatekeeper_enabled ? "true" : "false",
-                        s->gatekeeper_connected,
-                        s->gatekeeper_failure_count,
-                        s->gatekeeper_failure_threshold,
-                        s->gatekeeper_circuit_open ? "true" : "false",
-                        s->gatekeeper_next_retry_sec,
-                        gatekeeper_err_esc,
                         profile_esc);
                     break;
                 }
@@ -890,63 +932,9 @@ flush_phase:
                     char req_esc[WS_COMMAND_REQUEST_ID_MAX * 2 + 1];
                     char cmd_esc[WS_COMMAND_NAME_MAX * 2 + 1];
                     char msg_esc[WS_COMMAND_MESSAGE_MAX * 2 + 1];
-                    {
-                        const char *src = r->request_id;
-                        char *dst = req_esc;
-                        size_t remain = sizeof(req_esc) - 1;
-                        while (*src && remain > 1) {
-                            if (*src == '"') {
-                                *dst++ = '\\'; *dst++ = '"';
-                                remain -= 2;
-                            } else if (*src == '\\') {
-                                *dst++ = '\\'; *dst++ = '\\';
-                                remain -= 2;
-                            } else if ((unsigned char)*src >= 0x20) {
-                                *dst++ = *src;
-                                remain--;
-                            }
-                            src++;
-                        }
-                        *dst = '\0';
-                    }
-                    {
-                        const char *src = r->command;
-                        char *dst = cmd_esc;
-                        size_t remain = sizeof(cmd_esc) - 1;
-                        while (*src && remain > 1) {
-                            if (*src == '"') {
-                                *dst++ = '\\'; *dst++ = '"';
-                                remain -= 2;
-                            } else if (*src == '\\') {
-                                *dst++ = '\\'; *dst++ = '\\';
-                                remain -= 2;
-                            } else if ((unsigned char)*src >= 0x20) {
-                                *dst++ = *src;
-                                remain--;
-                            }
-                            src++;
-                        }
-                        *dst = '\0';
-                    }
-                    {
-                        const char *src = r->message;
-                        char *dst = msg_esc;
-                        size_t remain = sizeof(msg_esc) - 1;
-                        while (*src && remain > 1) {
-                            if (*src == '"') {
-                                *dst++ = '\\'; *dst++ = '"';
-                                remain -= 2;
-                            } else if (*src == '\\') {
-                                *dst++ = '\\'; *dst++ = '\\';
-                                remain -= 2;
-                            } else if ((unsigned char)*src >= 0x20) {
-                                *dst++ = *src;
-                                remain--;
-                            }
-                            src++;
-                        }
-                        *dst = '\0';
-                    }
+                    json_escape_string(r->request_id, req_esc, sizeof(req_esc));
+                    json_escape_string(r->command, cmd_esc, sizeof(cmd_esc));
+                    json_escape_string(r->message, msg_esc, sizeof(msg_esc));
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"schema_version\":%u,\"type\":\"command_result\",\"data\":{"
                         "\"timestamp\":%lu,\"contract_version\":%u,\"request_id\":\"%s\","

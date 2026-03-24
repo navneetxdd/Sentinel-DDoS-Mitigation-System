@@ -13,6 +13,14 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+ 
+/* BTF-defined maps for libbpf 1.0+ compatibility */
+#ifndef __uint
+# define __uint(name, val) int (*name)[val]
+#endif
+#ifndef __type
+# define __type(name, val) val *name
+#endif
 
 #define SEC(NAME) __attribute__((section(NAME), used))
 
@@ -30,18 +38,11 @@ static int (*bpf_skb_load_bytes)(void *ctx, __u32 off, void *to, __u32 len) = (v
 #define IPHEADER_LEN 20
 
 struct {
-    __u32 type;
-    __u32 key_size;
-    __u32 value_size;
-    __u32 max_entries;
-    __u32 map_flags;
-} blacklist_map SEC("maps") = {
-    .type = BPF_MAP_TYPE_HASH,
-    .key_size = sizeof(__u32),
-    .value_size = sizeof(__u64),
-    .max_entries = 65536,
-    .map_flags = 0,
-};
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u32);
+    __type(value, __u64);
+} blacklist_map SEC(".maps");
 
 /*
  * TC classifier: parse Ethernet + IPv4, lookup src IP in blacklist.

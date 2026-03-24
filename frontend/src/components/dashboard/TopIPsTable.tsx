@@ -26,6 +26,8 @@ export function TopIPsTable({
     else if (rateLimitedSet.has(s.ip)) status = "rate-limited";
     else if (s.suspicious)
       status = s.threat_score >= 0.7 ? "blocked" : "rate-limited";
+    else if (isAttack && (s.threat_score ?? 0) >= 0.5)
+      status = "rate-limited";
 
     return {
       ip: s.ip,

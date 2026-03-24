@@ -134,15 +134,17 @@ typedef struct source_entry {
 
 /* ============================================================================
  * PER-DESTINATION FAN-IN STATE
- * Tracks distinct source IPs targeting each destination via a 256-bit sketch.
+ * Tracks distinct source IPs targeting each destination via a wider sketch and
+ * linear counting estimate to reduce collision saturation under large floods.
  * ============================================================================ */
 
-#define DST_SOURCE_BITS  256u
+#define DST_SOURCE_BITS  1024u
 #define DST_SOURCE_WORDS (DST_SOURCE_BITS / 64u)
 
 typedef struct dst_entry {
     uint32_t dst_ip;
     uint64_t src_sketch[DST_SOURCE_WORDS];
+    uint32_t sketch_set_bits;
     uint32_t unique_src_estimate;
     uint64_t first_seen_ns;
     uint64_t last_seen_ns;
@@ -246,6 +248,53 @@ static uint32_t hash_u32(uint32_t val, uint32_t nbuckets)
     val = val * 0x27d4eb2d;
     val = val ^ (val >> 15);
     return val % nbuckets;
+}
+
+static double simpson_diversity_from_sum(uint64_t total_count, uint64_t pair_sum)
+{
+    if (total_count <= 1) return 0.0;
+
+    uint64_t divider = total_count * (total_count - 1);
+    if (divider == 0) return 0.0;
+
+    uint64_t d_scaled = (pair_sum * 1000000ULL) / divider;
+    double d = (double)d_scaled / 1000000.0;
+    return (d <= 1.0) ? (1.0 - d) : 0.0;
+}
+
+static uint32_t fanin_estimate_linear(uint32_t set_bits)
+{
+    if (set_bits == 0) return 0;
+    if (set_bits >= DST_SOURCE_BITS) return DST_SOURCE_BITS;
+
+    const double m = (double)DST_SOURCE_BITS;
+    const double v = m - (double)set_bits;
+    if (v <= 0.0) return DST_SOURCE_BITS;
+
+    double estimate = -m * log(v / m);
+    if (estimate < (double)set_bits) estimate = (double)set_bits;
+    if (estimate > 4294967295.0) estimate = 4294967295.0;
+    return (uint32_t)(estimate + 0.5);
+}
+
+static int payload_has_http_signature(const uint8_t *payload, uint16_t payload_len)
+{
+    if (!payload || payload_len < 4) return 0;
+
+    uint16_t scan_limit = payload_len;
+    if (scan_limit > 48) scan_limit = 48;
+
+    for (uint16_t off = 0; off + 4 <= scan_limit; off++) {
+        const uint8_t *p = payload + off;
+        if (memcmp(p, "GET ", 4) == 0 ||
+            memcmp(p, "POST", 4) == 0 ||
+            memcmp(p, "PUT ", 4) == 0 ||
+            memcmp(p, "HEAD", 4) == 0 ||
+            memcmp(p, "HTTP", 4) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* ============================================================================
@@ -803,7 +852,8 @@ int fe_ingest_packet(fe_context_t *ctx, const fe_packet_t *pkt)
             uint64_t bit_mask = 1ULL << (bit_index % 64u);
             if ((dst->src_sketch[word_index] & bit_mask) == 0) {
                 dst->src_sketch[word_index] |= bit_mask;
-                dst->unique_src_estimate++;
+                dst->sketch_set_bits++;
+                dst->unique_src_estimate = fanin_estimate_linear(dst->sketch_set_bits);
             }
             if (dst->first_seen_ns == 0)
                 dst->first_seen_ns = pkt->timestamp_ns;
@@ -839,14 +889,10 @@ int fe_ingest_packet(fe_context_t *ctx, const fe_packet_t *pkt)
     f->packets_since_extract++;
 
     /* TRUE LAYER 7 PARSING */
-    if (pkt->payload && pkt->payload_len > 4) {
+    if (pkt->payload && pkt->payload_len >= 4) {
         if (pkt->protocol == 6) { /* TCP -> HTTP Search */
-            /* Look for standard HTTP METHODS at start of payload */
-            if (memcmp(pkt->payload, "GET ", 4) == 0 ||
-                memcmp(pkt->payload, "POST", 4) == 0 ||
-                memcmp(pkt->payload, "PUT ", 4) == 0 ||
-                memcmp(pkt->payload, "HEAD", 4) == 0 ||
-                memcmp(pkt->payload, "HTTP", 4) == 0) {
+            /* Scan a small prefix window to handle non-zero payload offsets. */
+            if (payload_has_http_signature(pkt->payload, pkt->payload_len)) {
                 f->http_request_count++;
             }
         } 
@@ -903,7 +949,6 @@ static double compute_port_entropy(fe_context_t *ctx, const pkt_record_t *ring, 
 
     /* Jitter-free sparse map: use generation counters instead of memset. */
     uint32_t gen = ctx->entropy_gen;
-    uint32_t distinct = 0;
     ctx->entropy_scratch.port_dirty_count = 0;
 
     for (uint32_t i = 0; i < count; i++) {
@@ -920,7 +965,6 @@ static double compute_port_entropy(fe_context_t *ctx, const pkt_record_t *ring, 
                 ctx->entropy_scratch.port_table[pos].port = port;
                 ctx->entropy_scratch.port_table[pos].freq = 1;
                 ctx->entropy_scratch.port_dirty_idx[ctx->entropy_scratch.port_dirty_count++] = (uint16_t)pos;
-                distinct++;
                 found = 1;
             } else if (ctx->entropy_scratch.port_table[pos].port == port) {
                 ctx->entropy_scratch.port_table[pos].freq++;
@@ -929,23 +973,15 @@ static double compute_port_entropy(fe_context_t *ctx, const pkt_record_t *ring, 
         }
     }
 
-    /* Simpson's diversity index: 1 - D, where D = sum(n_i*(n_i-1))/(N*(N-1)).
-     * Use uint64_t fixed-point math to avoid double division in hot-path. */
-    uint64_t N = (uint64_t)count;
+    /* Simpson's diversity index: 1 - D, where D = sum(n_i*(n_i-1))/(N*(N-1)). */
     uint64_t sum_sq = 0;
     for (uint32_t i = 0; i < ctx->entropy_scratch.port_dirty_count; i++) {
         uint32_t pos = ctx->entropy_scratch.port_dirty_idx[i];
         uint64_t f = (uint64_t)ctx->entropy_scratch.port_table[pos].freq;
         sum_sq += f * (f - 1);
     }
-    
-    /* Scale by 1,000,000 for precision */
-    uint64_t divider = N * (N - 1);
-    if (divider == 0) return 0.0;
-    uint64_t D_scaled = (sum_sq * 1000000ULL) / divider;
-    
-    double D = (double)D_scaled / 1000000.0;
-    return (D <= 1.0) ? (1.0 - D) : 0.0;
+
+    return simpson_diversity_from_sum((uint64_t)count, sum_sq);
 }
 
 /* ============================================================================
@@ -974,21 +1010,15 @@ static double compute_size_entropy(fe_context_t *ctx, const pkt_record_t *ring, 
         }
     }
 
-    /* Simpson's diversity (fixed-point): 1 - D for payload-size distribution. */
-    uint64_t N = (uint64_t)count;
+    /* Simpson's diversity for payload-size distribution. */
     uint64_t sum_sq = 0;
     for (uint32_t i = 0; i < ctx->entropy_scratch.size_dirty_count; i++) {
         uint32_t b = ctx->entropy_scratch.size_dirty_idx[i];
         uint64_t f = (uint64_t)ctx->entropy_scratch.size_freq[b];
         sum_sq += f * (f - 1);
     }
-    
-    uint64_t divider = N * (N - 1);
-    if (divider == 0) return 0.0;
-    uint64_t D_scaled = (sum_sq * 1000000ULL) / divider;
-    
-    double D = (double)D_scaled / 1000000.0;
-    return (D <= 1.0) ? (1.0 - D) : 0.0;
+
+    return simpson_diversity_from_sum((uint64_t)count, sum_sq);
 }
 
 /* ============================================================================

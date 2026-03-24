@@ -26,6 +26,10 @@ benchmarks/results/
 .env.local
 .env.*.local
 sentinel_events.db
+*.db-wal
+*.db-shm
+all_files.txt
+.sentinel/
 
 # Cloned reference repos (not part of Sentinel)
 DDoS-Attack-Detection-and-Mitigation/
@@ -46,3 +50,4 @@ PRODUCTION_ISSUES.md
 tests/integration_test
 tests/ml_test
 tests/ml_audit_proof
+test_ml_threshold

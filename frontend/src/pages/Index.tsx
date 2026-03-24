@@ -3,11 +3,11 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { GridLayout, StatCard, Panel } from "@/components/layout/GridPanel";
 import { StatusBadge, StatusType } from "@/components/dashboard/StatusBadge";
 import { RiskGauge } from "@/components/dashboard/RiskGauge";
+import { RiskScoreBreakdown } from "@/components/dashboard/RiskScoreBreakdown";
 import { TrafficChart } from "@/components/dashboard/TrafficChart";
 import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
 import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
-import { SLOPanel } from "@/components/dashboard/SLOPanel";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
 import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
 import {
@@ -25,6 +25,10 @@ import {
 const Index = () => {
   const ws = useSentinelWebSocket();
   const benchmarks = useModelBenchmarkReport();
+  const runtimeModel = benchmarks.report?.models.find(
+    (model) => model.name === benchmarks.report?.runtime_model,
+  );
+  const runtimeAccuracy = runtimeModel?.test_metrics?.accuracy;
 
   /* Real data from backend streams - NEVER mock */
   const pps = ws.metrics?.packets_per_sec ?? 0;
@@ -40,13 +44,6 @@ const Index = () => {
   const cpuPercent = ws.metrics?.cpu_usage_percent ?? 0;
   const memMB = ws.metrics?.memory_usage_mb ?? 0;
   const mlOps = ws.metrics?.ml_classifications_per_sec ?? 0;
-  const integrationEnabledCount = [
-    ws.integrationStatus?.intel_feed_enabled,
-    ws.integrationStatus?.model_extension_enabled,
-    ws.integrationStatus?.controller_extension_enabled,
-    ws.integrationStatus?.signature_feed_enabled,
-    ws.integrationStatus?.dataplane_extension_enabled,
-  ].filter(Boolean).length;
 
   const getStatus = (): StatusType => {
     if (riskScore >= 70) return "attack";
@@ -128,20 +125,47 @@ const Index = () => {
           />
         </GridLayout>
 
-        <SLOPanel />
-
         {/* Main Monitoring Section - 3 Columns (Chart + Gauge + AI) */}
         <GridLayout cols={3} gap="lg">
-          <Panel title="Traffic Trends" variant="default">
+          <Panel title="Traffic Trends" variant="default" className="h-full">
             <TrafficChart data={ws.trafficHistory} isAttack={riskScore >= 70} />
           </Panel>
-          <Panel title="Risk Assessment" variant={riskScore >= 70 ? "highlight" : "default"}>
-            <RiskGauge value={riskScore} />
+          <Panel title="Risk Assessment" variant={riskScore >= 70 ? "highlight" : "default"} className="h-full">
+            <RiskGauge value={riskScore} className="h-full" />
           </Panel>
           <div className="h-full">
             <AIAnalystWidget telemetry={aiTelemetry} className="h-full min-h-[420px]" />
           </div>
         </GridLayout>
+
+        {/* Risk Score Component Breakdown */}
+        <RiskScoreBreakdown
+          threatScore={threatScore}
+          weights={{
+            volume_weight: ws.featureImportance?.volume_weight ?? 0,
+            entropy_weight: ws.featureImportance?.entropy_weight ?? 0,
+            protocol_weight: ws.featureImportance?.protocol_weight ?? 0,
+            behavioral_weight: ws.featureImportance?.behavioral_weight ?? 0,
+            ml_weight: ws.featureImportance?.ml_weight ?? 0,
+            l7_weight: ws.featureImportance?.l7_weight ?? 0,
+            anomaly_weight: ws.featureImportance?.anomaly_weight ?? 0,
+            chi_square_weight: ws.featureImportance?.chi_square_weight ?? 0,
+            fanin_weight: ws.featureImportance?.fanin_weight ?? 0,
+            signature_weight: ws.featureImportance?.signature_weight ?? 0,
+          }}
+          scores={{
+            score_volume: ws.featureImportance?.avg_score_volume ?? 0,
+            score_entropy: ws.featureImportance?.avg_score_entropy ?? 0,
+            score_protocol: ws.featureImportance?.avg_score_protocol ?? 0,
+            score_behavioral: ws.featureImportance?.avg_score_behavioral ?? 0,
+            score_ml: ws.featureImportance?.avg_score_ml ?? 0,
+            score_l7: ws.featureImportance?.avg_score_l7 ?? 0,
+            score_anomaly: ws.featureImportance?.avg_score_anomaly ?? 0,
+            score_chi_square: ws.featureImportance?.avg_score_chi_square ?? 0,
+            score_fanin: ws.featureImportance?.avg_score_fanin ?? 0,
+            score_signature: ws.featureImportance?.avg_score_signature ?? 0,
+          }}
+        />
 
         {/* Threat Intelligence Section - 2 Columns */}
         <Panel
@@ -207,7 +231,7 @@ const Index = () => {
             <StatCard
               label="ML Model"
               value={benchmarks.report?.runtime_model ?? "Random Forest"}
-              unit={benchmarks.report ? `${(benchmarks.report.accuracy * 100).toFixed(1)}%` : ""}
+              unit={typeof runtimeAccuracy === "number" ? `${(runtimeAccuracy * 100).toFixed(1)}%` : ""}
               icon={<Server className="w-5 h-5" />}
               variant="success"
             />
@@ -217,13 +241,6 @@ const Index = () => {
               unit={ws.mitigationStatus?.sdn_last_error ? "check controller" : "control plane"}
               icon={<Shield className="w-5 h-5" />}
               variant={sdnStatus === 1 ? "success" : sdnStatus === 0 ? "danger" : "warning"}
-            />
-            <StatCard
-              label="External Integrations"
-              value={integrationEnabledCount}
-              unit={ws.integrationStatus?.profile ?? "baseline"}
-              icon={<Layers className="w-5 h-5" />}
-              variant={integrationEnabledCount > 0 ? "warning" : "default"}
             />
           </GridLayout>
         </div>

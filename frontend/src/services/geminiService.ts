@@ -1,4 +1,5 @@
 import { fetchExplainApi } from "@/lib/apiConfig";
+import { getGeminiXAISettings } from "@/lib/settingsStorage";
 
 export interface ThreatTelemetry {
   timestamp: string;
@@ -20,9 +21,6 @@ const RETRY_ENABLED = true;
 const RETRY_INITIAL_DELAY_MS = 500;
 const RETRY_MAX_DELAY_MS = 3000;
 const RETRY_MAX_ATTEMPTS = 3;
-
-// Track last successful backend to optimize future calls (reserved for future use)
-const _lastSuccessfulBackend: string | null = null;
 
 /**
  * Exponential backoff calculator for retry logic
@@ -66,9 +64,16 @@ export const analyzeThreat = async (
       }
 
       try {
+        const { geminiApiKey } = getGeminiXAISettings();
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (geminiApiKey.trim()) {
+          // Key is sent only to local Explain API for server-side proxying.
+          headers["X-Gemini-Api-Key"] = geminiApiKey.trim();
+        }
+
         const res = await fetchExplainApi("/analyze", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(data),
           signal: controller.signal,
         });

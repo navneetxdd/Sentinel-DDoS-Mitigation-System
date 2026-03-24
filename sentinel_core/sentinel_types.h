@@ -214,7 +214,7 @@ typedef struct sentinel_sdn_rule {
     sentinel_sdn_action_t action;
     uint32_t rate_limit_kbps;       /* for RATE_LIMIT */
     uint32_t redirect_port;         /* for REDIRECT: output port on switch */
-    char     redirect_ip[16];       /* for REDIRECT: next-hop IP string */
+    uint32_t redirect_ip;           /* for REDIRECT: next-hop IPv4 (network byte order) */
 
     /* --- metadata --- */
     uint32_t idle_timeout;          /* seconds, 0 = permanent */

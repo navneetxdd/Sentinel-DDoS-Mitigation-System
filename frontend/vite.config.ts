@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 
 // https://vitejs.dev/config/
-export default defineConfig(({ mode }) => ({
+export default defineConfig(() => ({
   test: {
     globals: true,
     environment: "jsdom",
@@ -11,9 +11,10 @@ export default defineConfig(({ mode }) => ({
     include: ["src/**/*.test.{ts,tsx}"],
   },
   server: {
-    // "::" binds to all IPv4 and IPv6 interfaces — remove CORS pain in dev
-    host: "::",
-    port: 8080,
+    // Use localhost on a dedicated dev port to avoid IIS/HTTP.sys collisions.
+    host: "127.0.0.1",
+    port: 5173,
+    strictPort: true,
   },
   build: {
     rollupOptions: {

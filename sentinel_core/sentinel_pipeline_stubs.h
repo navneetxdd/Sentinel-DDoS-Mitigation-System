@@ -16,18 +16,88 @@
 #endif
 
 # include <stdint.h>
-# include <netinet/in.h>
-# include <netinet/ip.h>
-# include <netinet/tcp.h>
-# include <netinet/udp.h>
-# include <netinet/ip_icmp.h>
-# include <net/ethernet.h>
+#if defined(_WIN32) || !__has_include(<netinet/in.h>)
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
-typedef uint64_t __u64;
-typedef uint32_t __u32;
+#ifndef INET_ADDRSTRLEN
+#define INET_ADDRSTRLEN 16
+#endif
 
-struct bpf_map_info { char name[16]; };
+#ifndef ETHERTYPE_IP
+#define ETHERTYPE_IP 0x0800
+#endif
 
+#ifndef IPPROTO_ICMP
+#define IPPROTO_ICMP 1
+#endif
+
+struct ether_header {
+    uint8_t ether_dhost[6];
+    uint8_t ether_shost[6];
+    uint16_t ether_type;
+};
+
+struct iphdr {
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    uint8_t ihl:4;
+    uint8_t version:4;
+#else
+    uint8_t version:4;
+    uint8_t ihl:4;
+#endif
+    uint8_t tos;
+    uint16_t tot_len;
+    uint16_t id;
+    uint16_t frag_off;
+    uint8_t ttl;
+    uint8_t protocol;
+    uint16_t check;
+    uint32_t saddr;
+    uint32_t daddr;
+};
+
+struct tcphdr {
+    uint16_t source;
+    uint16_t dest;
+    uint32_t seq;
+    uint32_t ack_seq;
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    uint16_t res1:4;
+    uint16_t doff:4;
+    uint16_t flags:8;
+#else
+    uint16_t doff:4;
+    uint16_t res1:4;
+    uint16_t flags:8;
+#endif
+    uint16_t window;
+    uint16_t check;
+    uint16_t urg_ptr;
+};
+
+struct udphdr {
+    uint16_t source;
+    uint16_t dest;
+    uint16_t len;
+    uint16_t check;
+};
+
+struct icmphdr {
+    uint8_t type;
+    uint8_t code;
+    uint16_t checksum;
+    uint32_t rest;
+};
+
+#else
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include <netinet/ip_icmp.h>
+#include <net/ethernet.h>
+#endif
 union bpf_attr {
     uint64_t map_fd, key, value, flags, info, pathname;
     uint32_t start_id, next_id, map_id, bpf_fd, info_len;

@@ -120,9 +120,11 @@ typedef struct ws_top_source {
     double   threat_score;
 } ws_top_source_t;
 
-/* Stream 10a: Raw 20-feature vector (for SHAP explain API) */
+/* Stream 10a: Raw feature vector for SHAP explain API.
+ * 22 doubles = 20 ML features + 2 heuristic meta-scores (chi_square, fan-in).
+ * The frontend slices the first 20 elements for SHAP requests. */
 typedef struct ws_raw_feature_vector {
-    double values[22];  /* Order: packets_per_second, bytes_per_second, syn_ratio, ..., chi_square_score, unique_src_ips_to_dst */
+    double values[22];
 } ws_raw_feature_vector_t;
 
 /* Stream 10: Feature Importance */
@@ -140,6 +142,16 @@ typedef struct ws_feature_importance {
     double avg_threat_score;
     double avg_fanin_score;
     double avg_signature_score;/* average signature boost in current window */
+    double avg_score_volume;
+    double avg_score_entropy;
+    double avg_score_protocol;
+    double avg_score_behavioral;
+    double avg_score_ml;
+    double avg_score_l7;
+    double avg_score_anomaly;
+    double avg_score_chi_square;
+    double avg_score_fanin;
+    double avg_score_signature;
     uint32_t detections_last_10s;
     uint32_t policy_arm;
     uint64_t policy_updates;
@@ -160,12 +172,12 @@ typedef struct ws_connection {
 
 #define WS_SDN_LAST_ERROR_MAX 128
 #define WS_INTEGRATION_PROFILE_MAX 64
+#define WS_DATAPLANE_MODE_MAX 32
 #define WS_COMMAND_NAME_MAX 64
 #define WS_COMMAND_MESSAGE_MAX 160
 #define WS_COMMAND_REQUEST_ID_MAX 64
 #define WS_COMMAND_CONTRACT_VERSION 1
 #define WS_TELEMETRY_SCHEMA_VERSION 1
-#define WS_GATEKEEPER_LAST_ERROR_MAX 128
 
 /* Stream 12: Mitigation Status */
 typedef struct ws_mitigation_status {
@@ -178,6 +190,7 @@ typedef struct ws_mitigation_status {
     uint32_t active_sdn_rules;
     int      auto_mitigation_enabled;
     int      kernel_dropping_enabled;  /* 1=eBPF blacklist active, 0=fallback (no kernel drops) */
+    char     dataplane_mode[WS_DATAPLANE_MODE_MAX]; /* AF_XDP_ZEROCOPY/AF_XDP_COPY/RAW_SOCKET_FALLBACK */
     int      sdn_connected;            /* 1=last push ok, 0=last push failed, -1=never probed */
     char     sdn_last_error[WS_SDN_LAST_ERROR_MAX];  /* Last SDN push error for ops debugging */
 } ws_mitigation_status_t;
@@ -189,13 +202,6 @@ typedef struct ws_integration_status {
     int  controller_extension_enabled;
     int  signature_feed_enabled;
     int  dataplane_extension_enabled;
-    int  gatekeeper_enabled;
-    int  gatekeeper_connected; /* 1=last probe ok, 0=last probe failed, -1=not probed */
-    uint32_t gatekeeper_failure_count;
-    uint32_t gatekeeper_failure_threshold;
-    int  gatekeeper_circuit_open;
-    uint32_t gatekeeper_next_retry_sec;
-    char gatekeeper_last_error[WS_GATEKEEPER_LAST_ERROR_MAX];
     char profile[WS_INTEGRATION_PROFILE_MAX];
 } ws_integration_status_t;
 

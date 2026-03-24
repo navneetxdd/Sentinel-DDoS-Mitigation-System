@@ -543,7 +543,6 @@ export SENTINEL_ENABLE_MODEL_EXTENSION=0
 export SENTINEL_ENABLE_CONTROLLER_EXTENSION=0
 export SENTINEL_ENABLE_SIGNATURE_FEED=0
 export SENTINEL_ENABLE_DATAPLANE_EXTENSION=0
-export SENTINEL_ENABLE_GATEKEEPER_SIDECAR=0
 ```
 
 Optional controller-extension command bridge:
@@ -569,20 +568,7 @@ Suggested profile progression:
 - `progressive`: module-by-module enablement during validation
 - `full`: all integration modules enabled after quality gates are green
 
-Gatekeeper sidecar health integration knobs (used when `SENTINEL_ENABLE_GATEKEEPER_SIDECAR=1`):
-
-```bash
-export SENTINEL_GATEKEEPER_HEALTH_URL="http://127.0.0.1:9000/health"
-export SENTINEL_GATEKEEPER_PROBE_INTERVAL_SEC=5
-export SENTINEL_GATEKEEPER_FAILURE_THRESHOLD=3
-export SENTINEL_GATEKEEPER_CIRCUIT_COOLDOWN_SEC=15
-export SENTINEL_GATEKEEPER_STARTUP_RETRIES=3
-export SENTINEL_GATEKEEPER_STARTUP_RETRY_DELAY_MS=1000
-export SENTINEL_GATEKEEPER_PROBE_TIMEOUT_MS=1500
-export SENTINEL_GATEKEEPER_CONNECT_TIMEOUT_MS=800
-```
-
-When repeated health checks fail, Sentinel opens a circuit for the cooldown window and reports the degraded state through `integration_status` telemetry (`gatekeeper_circuit_open`, failure counters, and next retry seconds).
+- `full`: all integration modules enabled after quality gates are green
 
 ### Frontend endpoint overrides
 

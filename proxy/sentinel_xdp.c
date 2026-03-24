@@ -8,6 +8,14 @@
  */
 
 #include <linux/bpf.h>
+ 
+/* BTF-defined maps for libbpf 1.0+ compatibility */
+#ifndef __uint
+# define __uint(name, val) int (*name)[val]
+#endif
+#ifndef __type
+# define __type(name, val) val *name
+#endif
 
 /* SEC macro to place elements in specific ELF sections */
 #define SEC(NAME) __attribute__((section(NAME), used))
@@ -58,49 +66,31 @@ struct ip6_hdr {
  * Strict whitelist: IP -> 1. Userspace fills this; if src IP is present, XDP_PASS.
  */
 struct {
-    __u32 type;
-    __u32 key_size;
-    __u32 value_size;
-    __u32 max_entries;
-    __u32 map_flags;
-} whitelist_map SEC("maps") = {
-    .type = BPF_MAP_TYPE_HASH,
-    .key_size = sizeof(__u32),
-    .value_size = sizeof(__u8),
-    .max_entries = 4096,
-};
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, __u32);
+    __type(value, __u8);
+} whitelist_map SEC(".maps");
 
 /*
  * Strict blacklist: IP -> Timestamp. If src IP is present, drop instantly.
  */
 struct {
-    __u32 type;
-    __u32 key_size;
-    __u32 value_size;
-    __u32 max_entries;
-    __u32 map_flags;
-} blacklist_map SEC("maps") = {
-    .type = BPF_MAP_TYPE_HASH,
-    .key_size = sizeof(__u32),
-    .value_size = sizeof(__u64),
-    .max_entries = 65536,
-};
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u32);
+    __type(value, __u64);
+} blacklist_map SEC(".maps");
 
 /*
  * AF_XDP socket map. Userspace daemon registers UMEM sockets per queue.
  */
 struct {
-    __u32 type;
-    __u32 key_size;
-    __u32 value_size;
-    __u32 max_entries;
-    __u32 map_flags;
-} xsks_map SEC("maps") = {
-    .type = BPF_MAP_TYPE_XSKMAP,
-    .key_size = sizeof(int),
-    .value_size = sizeof(int),
-    .max_entries = 64,
-};
+    __uint(type, BPF_MAP_TYPE_XSKMAP);
+    __uint(max_entries, 64);
+    __type(key, int);
+    __type(value, int);
+} xsks_map SEC(".maps");
 
 #define MAX_VLAN_TAGS 4
 

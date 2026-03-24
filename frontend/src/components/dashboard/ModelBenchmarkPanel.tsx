@@ -64,16 +64,21 @@ export function ModelBenchmarkPanel({
       ) : (
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {report.models.map((model) => {
+            {report.models.map((model, index) => {
               const topFeature = model.top_features[0];
               const hasTopFeatures = model.top_features && model.top_features.length > 0;
               const isIsolationForest = model.name === "isolation_forest";
+              const remainder = report.models.length % 3;
+              const fillTailTwoCols = remainder === 2 && index === report.models.length - 2;
+              const fillTailThreeCols = remainder === 1 && index === report.models.length - 1;
               return (
                 <div
                   key={model.name}
                   className={cn(
                     "rounded-md border p-4 bg-secondary/30",
-                    model.exported ? "border-primary/30" : "border-border"
+                    model.exported ? "border-primary/30" : "border-border",
+                    fillTailTwoCols && "md:col-span-2",
+                    fillTailThreeCols && "md:col-span-3"
                   )}
                 >
                   <div className="flex items-center justify-between gap-3 mb-3">

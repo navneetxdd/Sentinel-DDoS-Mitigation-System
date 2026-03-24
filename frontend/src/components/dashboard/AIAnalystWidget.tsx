@@ -83,9 +83,9 @@ export const AIAnalystWidget = ({ telemetry, className }: AIAnalystWidgetProps) 
 
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto pr-2 space-y-4 font-mono text-sm leading-relaxed"
+        className="flex-1 overflow-y-auto pr-2 font-mono text-sm leading-relaxed"
       >
-        <div className={`relative p-4 rounded-md bg-secondary/40 border-l-2 ${telemetry.threatScore > 0.5 ? "border-status-danger" : "border-status-success"}`}>
+        <div className={`relative h-full min-h-[220px] p-4 rounded-md bg-secondary/40 border-l-2 flex flex-col ${telemetry.threatScore > 0.5 ? "border-status-danger" : "border-status-success"}`}>
           {isAnalyzing && (
             <div className="flex items-center gap-2 mb-2 text-foreground/70 pulse-glow">
               <span className="w-2 h-2 rounded-full bg-foreground/70"></span>
@@ -94,7 +94,7 @@ export const AIAnalystWidget = ({ telemetry, className }: AIAnalystWidgetProps) 
             </div>
           )}
 
-          <p className="whitespace-pre-wrap text-muted-foreground break-words">{analysis}</p>
+          <p className="whitespace-pre-wrap text-muted-foreground break-words flex-1">{analysis}</p>
 
           {!isAnalyzing && telemetry.threatScore <= 0.5 && (
             <div className="mt-4 flex items-center gap-2 text-status-success/80">

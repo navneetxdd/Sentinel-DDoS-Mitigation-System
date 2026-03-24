@@ -10,6 +10,10 @@ export interface MitigationIntegrationSettings {
   externalFirewallApiUrl: string;
 }
 
+export interface GeminiXAISettings {
+  geminiApiKey: string;
+}
+
 export function getMitigationIntegrationSettings(): MitigationIntegrationSettings {
   if (typeof window === "undefined") {
     return { alertWebhookUrl: "", alertWebhookSecret: "", externalFirewallApiUrl: "" };
@@ -25,5 +29,21 @@ export function getMitigationIntegrationSettings(): MitigationIntegrationSetting
     };
   } catch {
     return { alertWebhookUrl: "", alertWebhookSecret: "", externalFirewallApiUrl: "" };
+  }
+}
+
+export function getGeminiXAISettings(): GeminiXAISettings {
+  if (typeof window === "undefined") {
+    return { geminiApiKey: "" };
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { geminiApiKey: "" };
+    const p = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      geminiApiKey: typeof p.geminiApiKey === "string" ? p.geminiApiKey : "",
+    };
+  } catch {
+    return { geminiApiKey: "" };
   }
 }

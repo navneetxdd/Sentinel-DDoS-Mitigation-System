@@ -12,28 +12,33 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
 #include <time.h>
-#include <getopt.h>
 #include <inttypes.h>
-#include <poll.h>
-#include <pthread.h>
-#include <sched.h>
 #include <stdatomic.h>
 #include "sentinel_core/platform_compat.h"
 
-#ifdef __linux__
+#ifndef SENTINEL_LINUX_RUNTIME
+#define SENTINEL_LINUX_RUNTIME 0
+#endif
+
+#if SENTINEL_LINUX_RUNTIME
+# include <strings.h>
+# include <unistd.h>
+# include <getopt.h>
+# include <poll.h>
+# include <pthread.h>
+# include <sched.h>
 # include <sys/socket.h>
 # include <sys/mman.h>
 # include <sys/syscall.h>
 # include <sys/times.h>
+# include <sys/wait.h>
 # include <linux/if_xdp.h>
 # ifndef XDP_UMEM_PGOFF_FILL_RING
 # define XDP_UMEM_PGOFF_FILL_RING 0x100000000ULL
@@ -68,7 +73,7 @@
 
 static double read_cpu_usage(void)
 {
-#ifdef __linux__
+#if SENTINEL_LINUX_RUNTIME
     static unsigned long last_utime = 0, last_stime = 0;
     static struct timespec last_ts = { 0, 0 };
     FILE *f = fopen("/proc/self/stat", "r");
@@ -101,7 +106,7 @@ static double read_cpu_usage(void)
 
 static double read_mem_usage(void)
 {
-#ifdef __linux__
+#if SENTINEL_LINUX_RUNTIME
     FILE *f = fopen("/proc/self/status", "r");
     if (!f) return 0.0;
     char line[256];
@@ -122,7 +127,7 @@ static double read_mem_usage(void)
 /* Baremetal BPF syscall wrapper. On non-Linux (e.g. Windows IDE) returns -1 for IntelliSense. */
 static int bpf(int cmd, union bpf_attr *attr, unsigned int size)
 {
-#ifdef __linux__
+#if SENTINEL_LINUX_RUNTIME
     return (int)syscall(__NR_bpf, cmd, attr, size);
 #else
     (void)cmd;
@@ -199,7 +204,6 @@ typedef struct pipeline_integration_flags {
     int controller_extension_enabled;
     int signature_feed_enabled;
     int dataplane_extension_enabled;
-    int gatekeeper_sidecar_enabled;
     char profile[WS_INTEGRATION_PROFILE_MAX];
 } pipeline_integration_flags_t;
 
@@ -210,23 +214,13 @@ typedef struct controller_extension_state {
     char command[256];
 } controller_extension_state_t;
 
-typedef struct gatekeeper_sidecar_state {
-    int enabled;
-    int connected; /* 1=last probe ok, 0=last probe failed, -1=not probed */
-    uint64_t probe_interval_ns;
-    uint64_t last_probe_ns;
-    uint32_t failure_count;
-    uint32_t failure_threshold;
-    int circuit_open;
-    uint64_t circuit_open_until_ns;
-    uint64_t circuit_cooldown_ns;
-    uint32_t startup_max_attempts;
-    uint64_t startup_retry_delay_ns;
-    long probe_timeout_ms;
-    long connect_timeout_ms;
-    char health_url[256];
-    char last_error[WS_GATEKEEPER_LAST_ERROR_MAX];
-} gatekeeper_sidecar_state_t;
+typedef enum pipeline_dataplane_mode {
+    PIPELINE_DATAPLANE_AF_XDP_AUTO = 0,
+    PIPELINE_DATAPLANE_AF_XDP_ZEROCOPY,
+    PIPELINE_DATAPLANE_AF_XDP_COPY,
+    PIPELINE_DATAPLANE_RAW_FALLBACK
+} pipeline_dataplane_mode_t;
+
 
 static unsigned long parse_env_ul_bound(const char *name,
                                         unsigned long default_value,
@@ -243,196 +237,64 @@ static unsigned long parse_env_ul_bound(const char *name,
     return parsed;
 }
 
-static int env_flag_enabled(const char *name, int default_value)
+static int parse_env_bool_default(const char *name, int default_value)
 {
-    const char *v = getenv(name);
-    if (!v || !*v) return default_value;
-    if (strcmp(v, "1") == 0 || strcasecmp(v, "true") == 0 || strcasecmp(v, "yes") == 0 || strcasecmp(v, "on") == 0) {
+    const char *raw = getenv(name);
+    if (!raw || !raw[0]) return default_value;
+    if (strcmp(raw, "1") == 0 || strcasecmp(raw, "true") == 0 || strcasecmp(raw, "yes") == 0 || strcasecmp(raw, "on") == 0)
         return 1;
-    }
-    if (strcmp(v, "0") == 0 || strcasecmp(v, "false") == 0 || strcasecmp(v, "no") == 0 || strcasecmp(v, "off") == 0) {
+    if (strcmp(raw, "0") == 0 || strcasecmp(raw, "false") == 0 || strcasecmp(raw, "no") == 0 || strcasecmp(raw, "off") == 0)
         return 0;
-    }
     return default_value;
+}
+
+static const char *pipeline_dataplane_mode_str(pipeline_dataplane_mode_t mode)
+{
+    switch (mode) {
+        case PIPELINE_DATAPLANE_AF_XDP_ZEROCOPY: return "AF_XDP_ZEROCOPY";
+        case PIPELINE_DATAPLANE_AF_XDP_COPY: return "AF_XDP_COPY";
+        case PIPELINE_DATAPLANE_RAW_FALLBACK: return "RAW_SOCKET_FALLBACK";
+        case PIPELINE_DATAPLANE_AF_XDP_AUTO:
+        default:
+            return "AF_XDP_AUTO";
+    }
+}
+
+static int parse_command_argv(const char *command, char *storage, size_t storage_len,
+                              char **argv, size_t argv_cap)
+{
+    size_t argc = 0;
+    char *p;
+    if (!command || !storage || storage_len == 0 || !argv || argv_cap < 2) return -1;
+    snprintf(storage, storage_len, "%s", command);
+    p = storage;
+    while (*p && argc + 1 < argv_cap) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        argv[argc++] = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (!*p) break;
+        *p++ = '\0';
+    }
+    argv[argc] = NULL;
+    return (argc > 0) ? 0 : -1;
 }
 
 static void load_integration_flags(pipeline_integration_flags_t *flags)
 {
+    const char *profile;
     if (!flags) return;
-    flags->intel_feed_enabled = env_flag_enabled("SENTINEL_ENABLE_INTEL_FEED", 0);
-    flags->model_extension_enabled = env_flag_enabled("SENTINEL_ENABLE_MODEL_EXTENSION", 0);
-    flags->controller_extension_enabled = env_flag_enabled("SENTINEL_ENABLE_CONTROLLER_EXTENSION", 0);
-    flags->signature_feed_enabled = env_flag_enabled("SENTINEL_ENABLE_SIGNATURE_FEED", 0);
-    flags->dataplane_extension_enabled = env_flag_enabled("SENTINEL_ENABLE_DATAPLANE_EXTENSION", 0);
-    flags->gatekeeper_sidecar_enabled = env_flag_enabled("SENTINEL_ENABLE_GATEKEEPER_SIDECAR", 0);
-    {
-        const char *profile = getenv("SENTINEL_INTEGRATION_PROFILE");
-        if (!profile || !*profile) profile = "baseline";
-        snprintf(flags->profile, sizeof(flags->profile), "%s", profile);
-    }
+    flags->intel_feed_enabled = parse_env_bool_default("SENTINEL_INTEL_FEED_ENABLED", 1);
+    flags->model_extension_enabled = parse_env_bool_default("SENTINEL_MODEL_EXTENSION_ENABLED", 1);
+    flags->controller_extension_enabled = parse_env_bool_default("SENTINEL_CONTROLLER_EXTENSION_ENABLED", 1);
+    flags->signature_feed_enabled = parse_env_bool_default("SENTINEL_SIGNATURE_FEED_ENABLED", 1);
+    flags->dataplane_extension_enabled = parse_env_bool_default("SENTINEL_DATAPLANE_EXTENSION_ENABLED", 1);
+    profile = getenv("SENTINEL_INTEGRATION_PROFILE");
+    snprintf(flags->profile, sizeof(flags->profile), "%s", (profile && profile[0]) ? profile : "production");
 }
 
-static void load_gatekeeper_sidecar_state(gatekeeper_sidecar_state_t *state,
-                                          const pipeline_integration_flags_t *flags)
-{
-    const char *health_url;
-    unsigned long parsed_interval;
 
-    if (!state) return;
-    memset(state, 0, sizeof(*state));
-    state->connected = -1;
-
-    if (!flags || !flags->gatekeeper_sidecar_enabled) {
-        return;
-    }
-
-    state->enabled = 1;
-
-    health_url = getenv("SENTINEL_GATEKEEPER_HEALTH_URL");
-    if (!health_url || !health_url[0]) {
-        health_url = "http://127.0.0.1:9000/health";
-    }
-    snprintf(state->health_url, sizeof(state->health_url), "%s", health_url);
-
-    parsed_interval = parse_env_ul_bound("SENTINEL_GATEKEEPER_PROBE_INTERVAL_SEC", 5, 1, 300);
-    state->probe_interval_ns = (uint64_t)parsed_interval * 1000000000ULL;
-    state->failure_threshold = (uint32_t)parse_env_ul_bound("SENTINEL_GATEKEEPER_FAILURE_THRESHOLD", 3, 1, 20);
-    state->circuit_cooldown_ns = parse_env_ul_bound("SENTINEL_GATEKEEPER_CIRCUIT_COOLDOWN_SEC", 15, 1, 900) * 1000000000ULL;
-    state->startup_max_attempts = (uint32_t)parse_env_ul_bound("SENTINEL_GATEKEEPER_STARTUP_RETRIES", 3, 1, 20);
-    state->startup_retry_delay_ns = parse_env_ul_bound("SENTINEL_GATEKEEPER_STARTUP_RETRY_DELAY_MS", 1000, 100, 60000) * 1000000ULL;
-    state->probe_timeout_ms = (long)parse_env_ul_bound("SENTINEL_GATEKEEPER_PROBE_TIMEOUT_MS", 1500, 200, 10000);
-    state->connect_timeout_ms = (long)parse_env_ul_bound("SENTINEL_GATEKEEPER_CONNECT_TIMEOUT_MS", 800, 100, 5000);
-    snprintf(state->last_error, sizeof(state->last_error), "%s", "not probed yet");
-}
-
-static size_t gatekeeper_probe_discard_cb(char *ptr, size_t size, size_t nmemb, void *udata)
-{
-    (void)ptr;
-    (void)udata;
-    return size * nmemb;
-}
-
-static uint64_t monotonic_now_ns(void)
-{
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
-static void gatekeeper_probe_health_internal(gatekeeper_sidecar_state_t *state,
-                                             uint64_t now_ns,
-                                             int force)
-{
-    if (!state || !state->enabled) return;
-
-    if (state->circuit_open) {
-        if (now_ns < state->circuit_open_until_ns) {
-            uint64_t remaining_ns = state->circuit_open_until_ns - now_ns;
-            uint64_t remaining_sec = (remaining_ns + 999999999ULL) / 1000000000ULL;
-            state->connected = 0;
-            snprintf(state->last_error, sizeof(state->last_error), "circuit open (%llus until retry)",
-                     (unsigned long long)remaining_sec);
-            return;
-        }
-
-        state->circuit_open = 0;
-        state->circuit_open_until_ns = 0;
-        state->failure_count = 0;
-        fprintf(stderr, "[INFO] Gatekeeper sidecar circuit closed; retrying health checks\n");
-    }
-
-    if (!force && state->last_probe_ns != 0 && now_ns - state->last_probe_ns < state->probe_interval_ns)
-        return;
-
-    state->last_probe_ns = now_ns;
-
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        state->connected = 0;
-        snprintf(state->last_error, sizeof(state->last_error), "%s", "curl init failed");
-        return;
-    }
-
-    CURLcode rc;
-    long http_code = 0;
-    curl_easy_setopt(curl, CURLOPT_URL, state->health_url);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, state->probe_timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, state->connect_timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, gatekeeper_probe_discard_cb);
-
-    rc = curl_easy_perform(curl);
-    if (rc == CURLE_OK) {
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        if (http_code >= 200 && http_code < 300) {
-            state->connected = 1;
-            state->failure_count = 0;
-            state->last_error[0] = '\0';
-        } else {
-            state->connected = 0;
-            if (state->failure_count < UINT32_MAX) state->failure_count++;
-            snprintf(state->last_error, sizeof(state->last_error), "http %ld", http_code);
-        }
-    } else {
-        state->connected = 0;
-        if (state->failure_count < UINT32_MAX) state->failure_count++;
-        snprintf(state->last_error, sizeof(state->last_error), "%s", curl_easy_strerror(rc));
-    }
-
-    if (state->failure_count >= state->failure_threshold) {
-        state->circuit_open = 1;
-        state->circuit_open_until_ns = now_ns + state->circuit_cooldown_ns;
-        fprintf(stderr,
-            "[WARN] Gatekeeper sidecar health check failed %u times; opening circuit for %llu sec\n",
-            (unsigned)state->failure_count,
-            (unsigned long long)(state->circuit_cooldown_ns / 1000000000ULL));
-    }
-
-    curl_easy_cleanup(curl);
-}
-
-static void gatekeeper_probe_health(gatekeeper_sidecar_state_t *state, uint64_t now_ns)
-{
-    gatekeeper_probe_health_internal(state, now_ns, 0);
-}
-
-static void gatekeeper_startup_probe(gatekeeper_sidecar_state_t *state)
-{
-    if (!state || !state->enabled) return;
-
-    for (uint32_t attempt = 1; attempt <= state->startup_max_attempts; attempt++) {
-        uint64_t now_ns = monotonic_now_ns();
-        gatekeeper_probe_health_internal(state, now_ns, 1);
-        if (state->connected == 1) {
-            fprintf(stderr,
-                    "[INFO] Gatekeeper sidecar is reachable on startup (attempt %u/%u)\n",
-                    (unsigned)attempt,
-                    (unsigned)state->startup_max_attempts);
-            return;
-        }
-
-        if (attempt < state->startup_max_attempts) {
-            struct timespec delay_ts;
-            delay_ts.tv_sec = (time_t)(state->startup_retry_delay_ns / 1000000000ULL);
-            delay_ts.tv_nsec = (long)(state->startup_retry_delay_ns % 1000000000ULL);
-            fprintf(stderr,
-                    "[WARN] Gatekeeper startup probe failed (attempt %u/%u): %s; retrying in %llu ms\n",
-                    (unsigned)attempt,
-                    (unsigned)state->startup_max_attempts,
-                    state->last_error,
-                    (unsigned long long)(state->startup_retry_delay_ns / 1000000ULL));
-            nanosleep(&delay_ts, NULL);
-        }
-    }
-
-    fprintf(stderr,
-            "[WARN] Gatekeeper sidecar unreachable after %u startup probe attempts; running in degraded mode\n",
-            (unsigned)state->startup_max_attempts);
-}
-
-static void load_controller_extension_state(controller_extension_state_t *state,
-                                            const pipeline_integration_flags_t *flags)
+static void load_controller_extension_state(controller_extension_state_t *state)
 {
     const char *cmd;
     const char *interval_ms;
@@ -441,13 +303,14 @@ static void load_controller_extension_state(controller_extension_state_t *state,
     if (!state) return;
     memset(state, 0, sizeof(*state));
 
-    cmd = getenv("SENTINEL_CONTROLLER_EXTENSION_CMD");
-    if (!flags || !flags->controller_extension_enabled || !cmd || !*cmd) {
-        return;
-    }
-
+    /* Always attempt controller extension; graceful fallback if cmd not set */
     state->enabled = 1;
-    snprintf(state->command, sizeof(state->command), "%s", cmd);
+    cmd = getenv("SENTINEL_CONTROLLER_EXTENSION_CMD");
+    if (cmd && *cmd) {
+        snprintf(state->command, sizeof(state->command), "%s", cmd);
+    } else {
+        snprintf(state->command, sizeof(state->command), "%s", "");
+    }
 
     parsed = 2000UL;
     interval_ms = getenv("SENTINEL_CONTROLLER_EXTENSION_MIN_INTERVAL_MS");
@@ -475,8 +338,13 @@ static void maybe_run_controller_extension(controller_extension_state_t *state,
     const char *action;
     char attack_type_buf[16];
     int rc;
+    int status = 0;
+    pid_t pid;
+    char cmd_storage[sizeof(state->command)];
+    char *argv_exec[32];
 
     if (!state || !state->enabled || !assessment || !rule) return;
+    if (!state->command[0]) return;
     if (!enforcing) return;
     if (assessment->verdict == VERDICT_ALLOW) return;
     if (now_ns - state->last_exec_ns < state->min_interval_ns) return;
@@ -507,7 +375,29 @@ static void maybe_run_controller_extension(controller_extension_state_t *state,
     }
     setenv("SENTINEL_EXTENSION_SDN_PUSH_OK", (sdn_push_rc == 0) ? "1" : "0", 1);
 
-    rc = system(state->command);
+    if (parse_command_argv(state->command, cmd_storage, sizeof(cmd_storage), argv_exec, 32) != 0) {
+        fprintf(stderr, "[WARN] Controller extension command parse failed: %s\n", state->command);
+        return;
+    }
+
+    pid = fork();
+    if (pid == 0) {
+        execvp(argv_exec[0], argv_exec);
+        _exit(127);
+    }
+    if (pid < 0) {
+        fprintf(stderr, "[WARN] Controller extension fork failed: %s\n", strerror(errno));
+        return;
+    }
+
+    if (waitpid(pid, &status, 0) < 0) {
+        rc = -1;
+    } else if (WIFEXITED(status)) {
+        rc = WEXITSTATUS(status);
+    } else {
+        rc = -1;
+    }
+
     state->last_exec_ns = now_ns;
     if (rc != 0) {
         fprintf(stderr, "[WARN] Controller extension command returned %d\n", rc);
@@ -627,9 +517,25 @@ static int find_map_fd_by_name(const char *map_name)
         map_fd = -1;
     }
 
-    /* Fallback: open from default pinned path (BPF FS) */
+    /* Fallback: open from configurable pinned path (BPF FS). */
     {
-        const char *pinned_path = "/sys/fs/bpf/xsks_map";
+        const char *pinned_path = NULL;
+        char generated_path[512];
+
+        const char *explicit_map_path = getenv("SENTINEL_BPF_MAP_PATH");
+        const char *xsks_map_path = getenv("SENTINEL_XSKS_MAP_PATH");
+        const char *pin_dir = getenv("SENTINEL_BPF_PIN_DIR");
+
+        if (explicit_map_path && explicit_map_path[0]) {
+            pinned_path = explicit_map_path;
+        } else if (xsks_map_path && xsks_map_path[0] && strcmp(map_name, "xsks_map") == 0) {
+            pinned_path = xsks_map_path;
+        } else {
+            if (!pin_dir || !pin_dir[0]) pin_dir = "/sys/fs/bpf";
+            snprintf(generated_path, sizeof(generated_path), "%s/%s", pin_dir, map_name);
+            pinned_path = generated_path;
+        }
+
         union bpf_attr get_attr;
         memset(&get_attr, 0, sizeof(get_attr));
         get_attr.pathname = (uintptr_t)pinned_path;
@@ -641,7 +547,7 @@ static int find_map_fd_by_name(const char *map_name)
     return -1;
 }
 
-#ifdef __linux__
+#if SENTINEL_LINUX_RUNTIME
 /* HTTP health listener: GET /health or GET / on ws_port+1 returns 200 (for load balancers). */
 static void *health_listener_thread(void *arg)
 {
@@ -788,6 +694,8 @@ struct xdp_umem_uqueue {
 
 struct xdp_umem {
     char *frames;
+    size_t frames_len;
+    int frames_is_mmap;
     struct xdp_umem_uqueue fq;
     struct xdp_umem_uqueue cq;
     int fd;
@@ -839,6 +747,58 @@ static inline void xsk_ring_cons__release(struct xdp_rx_queue *rx, __u32 nb)
 static inline void *xsk_umem__get_data(void *umem_area, __u64 addr)
 {
     return &((char *)umem_area)[addr];
+}
+
+static int allocate_umem_frames(struct xdp_umem *umem, size_t bytes)
+{
+    if (!umem || bytes == 0) return -1;
+
+    umem->frames = NULL;
+    umem->frames_len = 0;
+    umem->frames_is_mmap = 0;
+
+#if SENTINEL_LINUX_RUNTIME
+    if (parse_env_bool_default("SENTINEL_UMEM_USE_HUGEPAGE", 0)) {
+        void *hp = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE | MAP_HUGETLB,
+                        -1, 0);
+        if (hp != MAP_FAILED) {
+            umem->frames = (char *)hp;
+            umem->frames_len = bytes;
+            umem->frames_is_mmap = 1;
+            return 0;
+        }
+        LOG_WARN("Hugepage UMEM allocation failed (%s). Falling back to page-aligned UMEM.", strerror(errno));
+    }
+#endif
+
+    void *bufs = NULL;
+    if (posix_memalign(&bufs, getpagesize(), bytes) != 0)
+        return -1;
+
+    umem->frames = (char *)bufs;
+    umem->frames_len = bytes;
+    umem->frames_is_mmap = 0;
+    return 0;
+}
+
+static void free_umem_frames(struct xdp_umem *umem)
+{
+    if (!umem || !umem->frames) return;
+
+#if SENTINEL_LINUX_RUNTIME
+    if (umem->frames_is_mmap) {
+        if (umem->frames_len > 0)
+            munmap(umem->frames, umem->frames_len);
+    } else
+#endif
+    {
+        free(umem->frames);
+    }
+
+    umem->frames = NULL;
+    umem->frames_len = 0;
+    umem->frames_is_mmap = 0;
 }
 
 /* ============================================================================
@@ -1022,7 +982,7 @@ parsed_l3_only:
  * AF_XDP socket and UMEM initialization.
  * This physically binds the userspace daemon to the NIC driver queue.
  */
-static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
+static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id, int *xdp_bind_mode) {
     LOG_INFO("Binding AF_XDP zero-copy socket on %s queue %d", ifname, queue_id);
     
     struct xsk_socket_info *xsk = calloc(1, sizeof(struct xsk_socket_info));
@@ -1031,21 +991,20 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
     xsk->umem = calloc(1, sizeof(struct xdp_umem));
     if (!xsk->umem) { free(xsk); return NULL; }
 
-    /* 1. Allocate hugepage or page-aligned memory for UMEM (Zero-Copy frame storage) */
-    void *bufs = NULL;
-    if (posix_memalign(&bufs, getpagesize(), NUM_FRAMES * FRAME_SIZE)) {
+    /* 1. Allocate hugepage-backed (optional) or page-aligned memory for UMEM. */
+    if (allocate_umem_frames(xsk->umem, NUM_FRAMES * FRAME_SIZE) != 0) {
         LOG_ERROR("Failed to allocate AF_XDP UMEM memory");
         free(xsk->umem);
         free(xsk);
         return NULL;
     }
-    xsk->umem->frames = bufs;
+    void *bufs = xsk->umem->frames;
 
     /* 2. Create the AF_XDP Socket (Inode descriptor) */
     xsk->xsk_fd = socket(AF_XDP, SOCK_RAW, 0);
     if (xsk->xsk_fd < 0) {
         LOG_WARN("AF_XDP socket creation failed (Requires root/capabilities or newer kernel)");
-        free(bufs);
+        free_umem_frames(xsk->umem);
         free(xsk->umem);
         free(xsk);
         return NULL;
@@ -1062,7 +1021,7 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
     if (setsockopt(xsk->xsk_fd, SOL_XDP, XDP_UMEM_REG, &mr, sizeof(mr)) < 0) {
         LOG_CRITICAL("AF_XDP setsockopt XDP_UMEM_REG failed.");
         close(xsk->xsk_fd);
-        free(bufs);
+        free_umem_frames(xsk->umem);
         free(xsk->umem);
         free(xsk);
         return NULL;
@@ -1074,7 +1033,7 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
     if (setsockopt(xsk->xsk_fd, SOL_XDP, XDP_UMEM_FILL_RING, &fq_size, sizeof(int)) < 0) {
         LOG_CRITICAL("AF_XDP setsockopt XDP_UMEM_FILL_RING failed.");
         close(xsk->xsk_fd);
-        free(bufs);
+        free_umem_frames(xsk->umem);
         free(xsk->umem);
         free(xsk);
         return NULL;
@@ -1082,7 +1041,7 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
     if (setsockopt(xsk->xsk_fd, SOL_XDP, XDP_RX_RING, &rx_size, sizeof(int)) < 0) {
         LOG_CRITICAL("AF_XDP setsockopt XDP_RX_RING failed.");
         close(xsk->xsk_fd);
-        free(bufs);
+        free_umem_frames(xsk->umem);
         free(xsk->umem);
         free(xsk);
         return NULL;
@@ -1096,7 +1055,7 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
     if (sxdp.sxdp_ifindex == 0) {
         LOG_CRITICAL("Invalid interface name '%s' (if_nametoindex failed)", ifname);
         close(xsk->xsk_fd);
-        free(bufs);
+        free_umem_frames(xsk->umem);
         free(xsk->umem);
         free(xsk);
         return NULL;
@@ -1104,14 +1063,46 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
     sxdp.sxdp_queue_id = queue_id;
     sxdp.sxdp_flags = 0;
 
-    if (bind(xsk->xsk_fd, (struct sockaddr *)&sxdp, sizeof(sxdp)) < 0) {
-        LOG_CRITICAL("AF_XDP physical NIC bind failed.");
+    int bind_ok = 0;
+    int bind_mode = 0;
+
+#ifdef XDP_ZEROCOPY
+    sxdp.sxdp_flags = XDP_ZEROCOPY;
+    if (bind(xsk->xsk_fd, (struct sockaddr *)&sxdp, sizeof(sxdp)) == 0) {
+        bind_ok = 1;
+        bind_mode = 1;
+    }
+#endif
+#ifdef XDP_COPY
+    if (!bind_ok) {
+        sxdp.sxdp_flags = XDP_COPY;
+        if (bind(xsk->xsk_fd, (struct sockaddr *)&sxdp, sizeof(sxdp)) == 0) {
+            bind_ok = 1;
+            bind_mode = 2;
+        }
+    }
+#endif
+    if (!bind_ok) {
+        sxdp.sxdp_flags = 0;
+        if (bind(xsk->xsk_fd, (struct sockaddr *)&sxdp, sizeof(sxdp)) == 0) {
+            bind_ok = 1;
+            bind_mode = 0;
+        }
+    }
+
+    if (!bind_ok) {
+        /* Downgraded to INFO: expected on loopback or virtual interfaces like WSL2 */
+        LOG_INFO("AF_XDP physical NIC bind skipped (using system fallback for %s)", ifname);
         close(xsk->xsk_fd);
-        free(bufs);
+        free_umem_frames(xsk->umem);
         free(xsk->umem);
         free(xsk);
         return NULL;
     }
+
+    if (xdp_bind_mode) *xdp_bind_mode = bind_mode;
+    LOG_INFO("AF_XDP bind mode selected: %s",
+             bind_mode == 1 ? "XDP_ZEROCOPY" : (bind_mode == 2 ? "XDP_COPY" : "AUTO"));
 
     /* 6. Mmap the RX Ring to Kernel Memory */
     struct xdp_mmap_offsets off;
@@ -1128,7 +1119,7 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
         } else {
             LOG_CRITICAL("AF_XDP mmap for RX ring failed.");
             close(xsk->xsk_fd);
-            free(bufs);
+            free_umem_frames(xsk->umem);
             free(xsk->umem);
             free(xsk);
             return NULL;
@@ -1136,7 +1127,7 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
     } else {
         LOG_CRITICAL("AF_XDP getsockopt MMAP_OFFSETS failed.");
         close(xsk->xsk_fd);
-        free(bufs);
+        free_umem_frames(xsk->umem);
         free(xsk->umem);
         free(xsk);
         return NULL;
@@ -1170,7 +1161,7 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id) {
             LOG_CRITICAL("AF_XDP mmap for FILL ring failed.");
             munmap(xsk->rx.map, xsk->rx.map_size);
             close(xsk->xsk_fd);
-            free(bufs);
+            free_umem_frames(xsk->umem);
             free(xsk->umem);
             free(xsk);
             return NULL;
@@ -1253,20 +1244,20 @@ static void pipeline_sync_whitelist_to_bpf(int whitelist_map_fd, de_context_t *d
     }
 }
 
-/* Insert an IP into the kernel BPF blacklist map. IP is converted to Net Order. */
-static void pipeline_blacklist_ip(int map_fd, uint32_t src_ip_host_order, uint64_t timestamp_ns)
+/* Insert an IP into the kernel BPF blacklist map. IP must be in network byte order. */
+static void pipeline_blacklist_ip(int map_fd, uint32_t src_ip_net_order, uint64_t timestamp_ns)
 {
     if (map_fd < 0) return;
-    uint32_t key = htonl(src_ip_host_order);
-    bpf_map_update_elem(map_fd, &key, &timestamp_ns, 0);
+    /* IP is already in network byte order (from iph->saddr, inet_pton, or assessment.src_ip) */
+    bpf_map_update_elem(map_fd, &src_ip_net_order, &timestamp_ns, 0);
 }
 
-/* Remove an IP from the kernel BPF blacklist map. */
-static void pipeline_unblacklist_ip(int map_fd, uint32_t src_ip_host_order)
+/* Remove an IP from the kernel BPF blacklist map. IP must be in network byte order. */
+static void pipeline_unblacklist_ip(int map_fd, uint32_t src_ip_net_order)
 {
     if (map_fd < 0) return;
-    uint32_t key = htonl(src_ip_host_order);
-    (void)bpf_map_delete_elem(map_fd, &key);
+    /* IP is already in network byte order. */
+    (void)bpf_map_delete_elem(map_fd, &src_ip_net_order);
 }
 
 /* Remove all entries from the kernel BPF blacklist map. */
@@ -1390,6 +1381,22 @@ static int ws_parse_double_arg(const char *arg, double *out)
     return 1;
 }
 
+#if !defined(NDEBUG) || defined(SENTINEL_ENABLE_SIM_COMMANDS)
+#define SENTINEL_SIM_COMMANDS_ENABLED 1
+#else
+#define SENTINEL_SIM_COMMANDS_ENABLED 0
+#endif
+
+static int ws_sim_commands_enabled(void)
+{
+#if SENTINEL_SIM_COMMANDS_ENABLED
+    /* Require explicit runtime opt-in even in debug builds. */
+    return parse_env_bool_default("SENTINEL_ALLOW_SIM_COMMANDS", 0);
+#else
+    return 0;
+#endif
+}
+
 static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
                                     const char *request_id, uint32_t contract_version,
                                     void *udata) {
@@ -1424,12 +1431,17 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
         if (colon && colon > arg) {
             char ip_buf[64];
             size_t ip_len = (size_t)(colon - arg);
+            char *endptr = NULL;
+            unsigned long parsed_port = 0;
             if (ip_len >= sizeof(ip_buf)) ip_len = sizeof(ip_buf) - 1;
             memcpy(ip_buf, arg, ip_len);
             ip_buf[ip_len] = '\0';
             if (inet_pton(AF_INET, ip_buf, &ia) == 1) {
                 ip = ia.s_addr;
-                port_host = (uint16_t)atoi(colon + 1);
+                parsed_port = strtoul(colon + 1, &endptr, 10);
+                if (endptr != colon + 1 && endptr && *endptr == '\0' && parsed_port > 0 && parsed_port <= 65535UL) {
+                    port_host = (uint16_t)parsed_port;
+                }
             }
         } else if (inet_pton(AF_INET, arg, &ia) == 1) {
             ip = ia.s_addr;
@@ -1452,7 +1464,7 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
                 rule.threat_score = 1.0;
                 rule.created_ns = (uint64_t)time(NULL) * 1000000000ULL;
                 if (sdn_push_rule(c->sdn, &rule) == 0)
-                    LOG_INFO("[WS-CMD] block_ip_port %s:%u — SDN rule pushed", arg, (unsigned)port_host);
+                    LOG_INFO("[WS-CMD] block_ip_port %s:%u â€” SDN rule pushed", arg, (unsigned)port_host);
             }
             LOG_INFO("[WS-CMD] block_ip_port %s", arg);
             ws_emit_command_result(c, cmd, request_id, contract_version, 1, "blocked %s", arg);
@@ -1480,7 +1492,7 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
     }
     else if (strcmp(cmd, "block_all_flagged") == 0) {
         atomic_store_explicit(&g_pending_block_all, 1, memory_order_release);
-        LOG_INFO("[WS-CMD] block_all_flagged — will take effect on next telemetry cycle");
+        LOG_INFO("[WS-CMD] block_all_flagged â€” will take effect on next telemetry cycle");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "queued block for all flagged sources");
     }
     else if (strcmp(cmd, "clear_all_blocks") == 0) {
@@ -1490,11 +1502,11 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
     }
     else if (strcmp(cmd, "apply_rate_limit") == 0) {
         de_set_global_rate_limit(c->de, 0.40, 0.70);
-        LOG_INFO("[WS-CMD] apply_rate_limit — thresholds set to 0.40/0.70");
+        LOG_INFO("[WS-CMD] apply_rate_limit â€” thresholds set to 0.40/0.70");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "global rate limit thresholds set to 0.40/0.70");
     }
     else if (strcmp(cmd, "enable_monitoring") == 0) {
-        LOG_INFO("[WS-CMD] enable_monitoring — enhanced monitoring enabled");
+        LOG_INFO("[WS-CMD] enable_monitoring â€” enhanced monitoring enabled");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "enhanced monitoring enabled");
     }
     else if (strcmp(cmd, "enable_auto_mitigation") == 0) {
@@ -1514,36 +1526,46 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "queued rate-limit clear for %s", arg);
     }
     else if (strcmp(cmd, "simulate_ddos") == 0 && c->ws) {
-        ws_activity_t wa;
-        wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
-        const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
-        wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80101);  /* 192.168.1.1 */
-        wa.threat_score = 0.92;
-        wa.enforced = 0;
-        snprintf(wa.action, sizeof(wa.action), "DETECTED");
-        snprintf(wa.attack_type, sizeof(wa.attack_type), "SYN_FLOOD");
-        snprintf(wa.reason, sizeof(wa.reason), "[SIMULATED] score=0.920 conf=0.95 ml=0.88 rel=0.90");
-        ws_push_activity(c->ws, &wa);
-        LOG_INFO("[WS-CMD] simulate_ddos — injected synthetic activity");
-        ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulated ddos activity injected");
+        if (ws_sim_commands_enabled()) {
+            ws_activity_t wa;
+            wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
+            const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
+            wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80101);  /* 192.168.1.1 */
+            wa.threat_score = 0.92;
+            wa.enforced = 0;
+            snprintf(wa.action, sizeof(wa.action), "DETECTED");
+            snprintf(wa.attack_type, sizeof(wa.attack_type), "SYN_FLOOD");
+            snprintf(wa.reason, sizeof(wa.reason), "[SIMULATED] score=0.920 conf=0.95 ml=0.88 rel=0.90");
+            ws_push_activity(c->ws, &wa);
+            LOG_INFO("[WS-CMD] simulate_ddos â€” injected synthetic activity");
+            ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulated ddos activity injected");
+        } else {
+            LOG_WARN("[WS-CMD] simulate_ddos rejected: simulation disabled");
+            ws_emit_command_result(c, cmd, request_id, contract_version, 0, "simulation commands are disabled (set SENTINEL_ALLOW_SIM_COMMANDS=1)");
+        }
     }
     else if (strcmp(cmd, "simulate_flash_crowd") == 0 && c->ws) {
-        ws_activity_t wa;
-        wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
-        const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
-        wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80102);  /* 192.168.1.2 */
-        wa.threat_score = 0.45;
-        wa.enforced = 0;
-        snprintf(wa.action, sizeof(wa.action), "MONITOR");
-        snprintf(wa.attack_type, sizeof(wa.attack_type), "NONE");
-        snprintf(wa.reason, sizeof(wa.reason), "[SIMULATED] Flash crowd — score=0.450 conf=0.70 ml=0.35 rel=0.80");
-        ws_push_activity(c->ws, &wa);
-        LOG_INFO("[WS-CMD] simulate_flash_crowd — injected synthetic activity");
-        ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulated flash crowd activity injected");
+        if (ws_sim_commands_enabled()) {
+            ws_activity_t wa;
+            wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
+            const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
+            wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80102);  /* 192.168.1.2 */
+            wa.threat_score = 0.45;
+            wa.enforced = 0;
+            snprintf(wa.action, sizeof(wa.action), "MONITOR");
+            snprintf(wa.attack_type, sizeof(wa.attack_type), "NONE");
+            snprintf(wa.reason, sizeof(wa.reason), "[SIMULATED] Flash crowd â€” score=0.450 conf=0.70 ml=0.35 rel=0.80");
+            ws_push_activity(c->ws, &wa);
+            LOG_INFO("[WS-CMD] simulate_flash_crowd â€” injected synthetic activity");
+            ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulated flash crowd activity injected");
+        } else {
+            LOG_WARN("[WS-CMD] simulate_flash_crowd rejected: simulation disabled");
+            ws_emit_command_result(c, cmd, request_id, contract_version, 0, "simulation commands are disabled (set SENTINEL_ALLOW_SIM_COMMANDS=1)");
+        }
     }
     else if (strcmp(cmd, "stop_simulation") == 0) {
         /* Acknowledge so UI can clear simulation state; no backend state to clear. */
-        LOG_INFO("[WS-CMD] stop_simulation — acknowledged");
+        LOG_INFO("[WS-CMD] stop_simulation â€” acknowledged");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulation stopped");
     }
     else if (strcmp(cmd, "set_syn_threshold") == 0 && arg) {
@@ -1633,10 +1655,8 @@ int main(int argc, char **argv)
     int opt;
     pipeline_integration_flags_t integration_flags;
     controller_extension_state_t controller_extension;
-    gatekeeper_sidecar_state_t gatekeeper_sidecar;
     memset(&integration_flags, 0, sizeof(integration_flags));
     memset(&controller_extension, 0, sizeof(controller_extension));
-    memset(&gatekeeper_sidecar, 0, sizeof(gatekeeper_sidecar));
 
     static struct option long_options[] = {
         {"interface",  required_argument, 0, 'i'},
@@ -1697,39 +1717,42 @@ int main(int argc, char **argv)
 
     LOG_INFO("Starting Sentinel DDoS Core (AF_XDP mode)");
     load_integration_flags(&integration_flags);
-    load_controller_extension_state(&controller_extension, &integration_flags);
-    load_gatekeeper_sidecar_state(&gatekeeper_sidecar, &integration_flags);
+    load_controller_extension_state(&controller_extension);
     LOG_INFO("Integration profile: %s", integration_flags.profile);
-    LOG_INFO("Integration flags: intel=%d model=%d controller=%d signature=%d dataplane=%d gatekeeper=%d",
+    LOG_INFO("Integration flags: intel=%d model=%d controller=%d signature=%d dataplane=%d",
              integration_flags.intel_feed_enabled,
              integration_flags.model_extension_enabled,
              integration_flags.controller_extension_enabled,
              integration_flags.signature_feed_enabled,
-             integration_flags.dataplane_extension_enabled,
-             integration_flags.gatekeeper_sidecar_enabled);
+             integration_flags.dataplane_extension_enabled);
     if (controller_extension.enabled) {
         LOG_INFO("Controller extension command enabled with %llu ms minimum interval",
                  (unsigned long long)(controller_extension.min_interval_ns / 1000000ULL));
-    }
-    if (gatekeeper_sidecar.enabled) {
-        LOG_INFO("Gatekeeper sidecar probe enabled: url=%s interval=%llu sec fail_threshold=%u cooldown=%llu sec",
-                 gatekeeper_sidecar.health_url,
-                 (unsigned long long)(gatekeeper_sidecar.probe_interval_ns / 1000000000ULL),
-                 (unsigned)gatekeeper_sidecar.failure_threshold,
-                 (unsigned long long)(gatekeeper_sidecar.circuit_cooldown_ns / 1000000000ULL));
     }
     LOG_INFO("Binding to interface: %s, queue: %d", ifname, queue_id);
     if (verbose)
         LOG_INFO("Verbose mode enabled");
 
-    /* TIER-1: CPU Core Pinning (Pin to Core 1 to prevent cache invalidation) */
+    /* TIER-1: CPU Core Pinning (defaults to Core 1, overridable with SENTINEL_CPU_PIN) */
     cpu_set_t cpuset;
+    int target_cpu = 1;
+    long cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+    const char *cpu_pin_env = getenv("SENTINEL_CPU_PIN");
+    if (cpu_pin_env && cpu_pin_env[0]) {
+        char *endptr = NULL;
+        unsigned long parsed = strtoul(cpu_pin_env, &endptr, 10);
+        if (endptr != cpu_pin_env && endptr && *endptr == '\0' && parsed < (unsigned long)((cpu_count > 0) ? cpu_count : 1)) {
+            target_cpu = (int)parsed;
+        } else {
+            LOG_WARN("Invalid SENTINEL_CPU_PIN=%s, using default core 1", cpu_pin_env);
+        }
+    }
     CPU_ZERO(&cpuset);
-    CPU_SET(1, &cpuset);
+    CPU_SET(target_cpu, &cpuset);
     if (sched_setaffinity(0, sizeof(cpu_set_t), &cpuset) == 0) {
-        LOG_INFO("Successfully pinned process to CPU Core 1");
+        LOG_INFO("Successfully pinned process to CPU Core %d", target_cpu);
     } else {
-        LOG_WARN("Failed to pin process to CPU Core 1 (Requires CAP_SYS_NICE or root)");
+        LOG_WARN("Failed to pin process to CPU Core %d (Requires CAP_SYS_NICE or root)", target_cpu);
     }
 
     struct sigaction sa = { .sa_handler = sig_handler };
@@ -1754,15 +1777,14 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    if (integration_flags.signature_feed_enabled) {
-        const char *sig_file = getenv("SENTINEL_SIGNATURES_FILE");
-        if (!sig_file || !sig_file[0])
-            sig_file = getenv("SENTINEL_REFLECTION_PORTS_FILE");
-        if (!sig_file || !sig_file[0])
-            sig_file = "signatures/methods.json";
-        uint32_t n_sigs = de_load_signatures(de, sig_file);
-        LOG_INFO("Loaded %u reflection signatures from %s", n_sigs, sig_file);
-    }
+    /* Always load reflection signatures (production requirement) */
+    const char *sig_file = getenv("SENTINEL_SIGNATURES_FILE");
+    if (!sig_file || !sig_file[0])
+        sig_file = getenv("SENTINEL_REFLECTION_PORTS_FILE");
+    if (!sig_file || !sig_file[0])
+        sig_file = "signatures/methods.json";
+    uint32_t n_sigs = de_load_signatures(de, sig_file);
+    LOG_INFO("Loaded %u reflection signatures from %s (always enabled)", n_sigs, sig_file);
 
     /* Initialize detached SDN controller (override URL/dpid if provided) */
     sdn_config_t sdn_cfg = SDN_CONFIG_DEFAULT;
@@ -1788,7 +1810,7 @@ int main(int argc, char **argv)
     }
 
     ws_context_t *ws = NULL;
-#ifdef __linux__
+#if SENTINEL_LINUX_RUNTIME
     pthread_t health_listener_thread_id;
     int health_listener_started = 0;
 #endif
@@ -1806,7 +1828,7 @@ int main(int argc, char **argv)
             ws_cmd_ctx_storage.ws = ws;
             ws_cmd_ctx_storage.sdn = sdn;
             ws_set_command_callback(ws, ws_pipeline_cmd_handler, &ws_cmd_ctx_storage);
-#ifdef __linux__
+#if SENTINEL_LINUX_RUNTIME
             {
                 uint16_t health_port = (uint16_t)(ws_port + 1);
                 if (pthread_create(&health_listener_thread_id, NULL, health_listener_thread, &health_port) == 0) {
@@ -1823,7 +1845,9 @@ int main(int argc, char **argv)
         }
     }
 
-    struct xsk_socket_info *xsk = configure_xsk(ifname, queue_id);
+    int xdp_bind_mode = 0;
+    pipeline_dataplane_mode_t dataplane_mode = PIPELINE_DATAPLANE_AF_XDP_AUTO;
+    struct xsk_socket_info *xsk = configure_xsk(ifname, queue_id, &xdp_bind_mode);
     int use_raw_fallback = 0;
     if (!xsk) {
         /* AF_XDP failed (expected on WSL2 / VMs); try kernel raw socket. */
@@ -1838,7 +1862,15 @@ int main(int argc, char **argv)
             return EXIT_FAILURE;
         }
         use_raw_fallback = 1;
+        dataplane_mode = PIPELINE_DATAPLANE_RAW_FALLBACK;
+    } else {
+        dataplane_mode = (xdp_bind_mode == 1)
+            ? PIPELINE_DATAPLANE_AF_XDP_ZEROCOPY
+            : (xdp_bind_mode == 2 ? PIPELINE_DATAPLANE_AF_XDP_COPY : PIPELINE_DATAPLANE_AF_XDP_AUTO);
     }
+    LOG_INFO("Dataplane capture mode: %s", pipeline_dataplane_mode_str(dataplane_mode));
+    LOG_INFO("Simulation WS commands: %s (set SENTINEL_ALLOW_SIM_COMMANDS=1 to enable)",
+             ws_sim_commands_enabled() ? "enabled" : "disabled");
     uint64_t rx_packets = 0;
     uint64_t last_rx_for_metrics = 0;
     uint64_t coarse_now_ns = 0;  /* heartbeat: every 128 packets for <10us jitter at 14.88Mpps */
@@ -1865,7 +1897,7 @@ int main(int argc, char **argv)
             if (xsk->rx.map != NULL && xsk->rx.map_size > 0)
                 munmap(xsk->rx.map, xsk->rx.map_size);
             if (xsk->umem) {
-                free(xsk->umem->frames);
+                free_umem_frames(xsk->umem);
                 free(xsk->umem);
             }
         }
@@ -1874,7 +1906,6 @@ int main(int argc, char **argv)
         free(xsk);
         return EXIT_FAILURE;
     }
-    gatekeeper_startup_probe(&gatekeeper_sidecar);
 
     /* SDN Health Check Timer - probe every 5 seconds to catch early connectivity */
     uint64_t last_sdn_health_check = 0;
@@ -1931,9 +1962,19 @@ int main(int argc, char **argv)
     ws_ip_entry_t monitored_ips[TELEM_IP_MAX];
     ws_ip_entry_t whitelisted_ips[TELEM_IP_MAX];
     uint32_t blocked_head = 0, rate_limited_head = 0, monitored_head = 0;  /* cyclic ring write index */
-    uint32_t total_blocked = 0, total_rate_limited = 0, total_monitored = 0;
+    _Atomic uint32_t total_blocked = 0;
+    _Atomic uint32_t total_rate_limited = 0;
+    uint32_t total_monitored = 0;
     _Atomic uint32_t detections_10s = 0;
     _Atomic double threat_sum_10s = 0.0;
+    _Atomic double volume_sum_10s = 0.0;
+    _Atomic double entropy_sum_10s = 0.0;
+    _Atomic double protocol_sum_10s = 0.0;
+    _Atomic double behavioral_sum_10s = 0.0;
+    _Atomic double ml_sum_10s = 0.0;
+    _Atomic double l7_sum_10s = 0.0;
+    _Atomic double anomaly_sum_10s = 0.0;
+    _Atomic double chi_square_sum_10s = 0.0;
     _Atomic double fanin_sum_10s = 0.0;
     _Atomic double signature_sum_10s = 0.0;
     _Atomic uint32_t threat_count_10s = 0;
@@ -1986,8 +2027,8 @@ int main(int argc, char **argv)
             wm.ml_classifications_per_sec = classifications_this_sec;
             wm.cpu_usage_percent = read_cpu_usage();
             wm.memory_usage_mb = read_mem_usage();
-            wm.kernel_drops = total_blocked;
-            wm.userspace_drops = total_rate_limited;
+            wm.kernel_drops = atomic_load_explicit(&total_blocked, memory_order_acquire);
+            wm.userspace_drops = atomic_load_explicit(&total_rate_limited, memory_order_acquire);
             ws_update_metrics(ws, &wm);
 
             if (skipped_classifications_this_sec > 0) {
@@ -2041,16 +2082,21 @@ int main(int argc, char **argv)
 
             ws_mitigation_status_t ms;
             memset(&ms, 0, sizeof(ms));
-            ms.total_blocked = total_blocked;
-            ms.total_rate_limited = total_rate_limited;
+            {
+                uint32_t total_blocked_snapshot = atomic_load_explicit(&total_blocked, memory_order_acquire);
+                uint32_t total_rate_limited_snapshot = atomic_load_explicit(&total_rate_limited, memory_order_acquire);
+                ms.total_blocked = total_blocked_snapshot;
+                ms.total_rate_limited = total_rate_limited_snapshot;
+                ms.active_sdn_rules = (total_blocked_snapshot > TELEM_IP_MAX ? TELEM_IP_MAX : total_blocked_snapshot)
+                    + (total_rate_limited_snapshot > TELEM_IP_MAX ? TELEM_IP_MAX : total_rate_limited_snapshot);
+            }
             ms.total_monitored = total_monitored;
             ms.total_whitelisted = n_whitelist_static;
             ms.kernel_verdict_cache_hits = 0;
             ms.kernel_verdict_cache_misses = 0;
-            ms.active_sdn_rules = (total_blocked > TELEM_IP_MAX ? TELEM_IP_MAX : total_blocked)
-                + (total_rate_limited > TELEM_IP_MAX ? TELEM_IP_MAX : total_rate_limited);
             ms.auto_mitigation_enabled = atomic_load_explicit(&g_auto_mitigation_enabled, memory_order_acquire);
             ms.kernel_dropping_enabled = (blacklist_map_fd > 0) ? 1 : 0;
+            snprintf(ms.dataplane_mode, sizeof(ms.dataplane_mode), "%s", pipeline_dataplane_mode_str(dataplane_mode));
             
             /* Periodic SDN health check (every 5s) to catch early connectivity status */
             if (now - last_sdn_health_check >= sdn_health_check_interval) {
@@ -2063,8 +2109,6 @@ int main(int argc, char **argv)
             sdn_get_last_error(sdn, ms.sdn_last_error, sizeof(ms.sdn_last_error));
             ws_update_mitigation_status(ws, &ms);
 
-            gatekeeper_probe_health(&gatekeeper_sidecar, coarse_now_ns);
-
             ws_integration_status_t ist;
             memset(&ist, 0, sizeof(ist));
             ist.intel_feed_enabled = integration_flags.intel_feed_enabled;
@@ -2072,18 +2116,6 @@ int main(int argc, char **argv)
             ist.controller_extension_enabled = integration_flags.controller_extension_enabled;
             ist.signature_feed_enabled = integration_flags.signature_feed_enabled;
             ist.dataplane_extension_enabled = integration_flags.dataplane_extension_enabled;
-            ist.gatekeeper_enabled = gatekeeper_sidecar.enabled;
-            ist.gatekeeper_connected = gatekeeper_sidecar.enabled ? gatekeeper_sidecar.connected : -1;
-            ist.gatekeeper_failure_count = gatekeeper_sidecar.enabled ? gatekeeper_sidecar.failure_count : 0;
-            ist.gatekeeper_failure_threshold = gatekeeper_sidecar.enabled ? gatekeeper_sidecar.failure_threshold : 0;
-            ist.gatekeeper_circuit_open = gatekeeper_sidecar.enabled ? gatekeeper_sidecar.circuit_open : 0;
-            if (gatekeeper_sidecar.enabled && gatekeeper_sidecar.circuit_open && gatekeeper_sidecar.circuit_open_until_ns > coarse_now_ns) {
-                uint64_t remaining_ns = gatekeeper_sidecar.circuit_open_until_ns - coarse_now_ns;
-                ist.gatekeeper_next_retry_sec = (uint32_t)((remaining_ns + 999999999ULL) / 1000000000ULL);
-            } else {
-                ist.gatekeeper_next_retry_sec = 0;
-            }
-            snprintf(ist.gatekeeper_last_error, sizeof(ist.gatekeeper_last_error), "%s", gatekeeper_sidecar.last_error);
             snprintf(ist.profile, sizeof(ist.profile), "%s", integration_flags.profile);
             ws_update_integration_status(ws, &ist);
 
@@ -2118,7 +2150,7 @@ int main(int argc, char **argv)
                         blocked_ips[blocked_head % TELEM_IP_MAX].rule_id = 0;
                         blocked_ips[blocked_head % TELEM_IP_MAX].rate_limit_pps = 0;
                         blocked_head = (blocked_head + 1) % TELEM_IP_MAX;
-                        total_blocked++;
+                        atomic_fetch_add_explicit(&total_blocked, 1, memory_order_acq_rel);
                     }
                 }
                 total_monitored = 0;
@@ -2128,19 +2160,21 @@ int main(int argc, char **argv)
 
             /* Process pending clear_all_blocks: flush eBPF map, clear denylist, reset counters */
             if (atomic_exchange_explicit(&g_pending_clear_all, 0, memory_order_acquire)) {
-                uint32_t n_blocked = (total_blocked < TELEM_IP_MAX) ? total_blocked : TELEM_IP_MAX;
-                uint32_t n_rl = (total_rate_limited < TELEM_IP_MAX) ? total_rate_limited : TELEM_IP_MAX;
-                uint32_t blocked_start = (total_blocked >= TELEM_IP_MAX) ? blocked_head : 0;
-                uint32_t rl_start = (total_rate_limited >= TELEM_IP_MAX) ? rate_limited_head : 0;
+                uint32_t total_blocked_snapshot = atomic_load_explicit(&total_blocked, memory_order_acquire);
+                uint32_t total_rate_limited_snapshot = atomic_load_explicit(&total_rate_limited, memory_order_acquire);
+                uint32_t n_blocked = (total_blocked_snapshot < TELEM_IP_MAX) ? total_blocked_snapshot : TELEM_IP_MAX;
+                uint32_t n_rl = (total_rate_limited_snapshot < TELEM_IP_MAX) ? total_rate_limited_snapshot : TELEM_IP_MAX;
+                uint32_t blocked_start = (total_blocked_snapshot >= TELEM_IP_MAX) ? blocked_head : 0;
+                uint32_t rl_start = (total_rate_limited_snapshot >= TELEM_IP_MAX) ? rate_limited_head : 0;
                 for (uint32_t i = 0; i < n_blocked; i++)
                     sdn_remove_rules_for_src(sdn, blocked_ips[(blocked_start + i) % TELEM_IP_MAX].ip);
                 for (uint32_t i = 0; i < n_rl; i++)
                     sdn_remove_rules_for_src(sdn, rate_limited_ips[(rl_start + i) % TELEM_IP_MAX].ip);
                 pipeline_clear_blacklist_map(blacklist_map_fd);
                 de_clear_denylist(de);
-                total_blocked = 0;
+                atomic_store_explicit(&total_blocked, 0, memory_order_release);
                 blocked_head = 0;
-                total_rate_limited = 0;
+                atomic_store_explicit(&total_rate_limited, 0, memory_order_release);
                 rate_limited_head = 0;
                 g_cleared_rate_limit_count = 0;
                 LOG_INFO("[PIPELINE] clear_all_blocks: kernel map and denylist cleared");
@@ -2150,12 +2184,14 @@ int main(int argc, char **argv)
             {
                 ws_ip_entry_t blocked_ordered[TELEM_IP_MAX], rate_limited_ordered[TELEM_IP_MAX];
                 ws_ip_entry_t monitored_ordered[TELEM_IP_MAX];
-                uint32_t blocked_count = (total_blocked < TELEM_IP_MAX) ? total_blocked : TELEM_IP_MAX;
-                uint32_t rate_limited_count = (total_rate_limited < TELEM_IP_MAX) ? total_rate_limited : TELEM_IP_MAX;
+                uint32_t total_blocked_snapshot = atomic_load_explicit(&total_blocked, memory_order_acquire);
+                uint32_t total_rate_limited_snapshot = atomic_load_explicit(&total_rate_limited, memory_order_acquire);
+                uint32_t blocked_count = (total_blocked_snapshot < TELEM_IP_MAX) ? total_blocked_snapshot : TELEM_IP_MAX;
+                uint32_t rate_limited_count = (total_rate_limited_snapshot < TELEM_IP_MAX) ? total_rate_limited_snapshot : TELEM_IP_MAX;
                 uint32_t monitored_count = (total_monitored < TELEM_IP_MAX) ? total_monitored : TELEM_IP_MAX;
                 uint32_t whitelist_count = (n_whitelist_static < TELEM_IP_MAX) ? n_whitelist_static : TELEM_IP_MAX;
-                uint32_t blocked_start = (total_blocked >= TELEM_IP_MAX) ? blocked_head : 0;
-                uint32_t rate_limited_start = (total_rate_limited >= TELEM_IP_MAX) ? rate_limited_head : 0;
+                uint32_t blocked_start = (total_blocked_snapshot >= TELEM_IP_MAX) ? blocked_head : 0;
+                uint32_t rate_limited_start = (total_rate_limited_snapshot >= TELEM_IP_MAX) ? rate_limited_head : 0;
                 uint32_t monitored_start = (total_monitored >= TELEM_IP_MAX) ? monitored_head : 0;
                 for (uint32_t i = 0; i < blocked_count; i++) {
                     blocked_ordered[i] = blocked_ips[(blocked_start + i) % TELEM_IP_MAX];
@@ -2219,7 +2255,7 @@ int main(int argc, char **argv)
             period_bytes_total = 0;
         }
 
-        /* Telemetry: 5s – top_sources with real-time ML classification */
+        /* Telemetry: 5s â€“ top_sources with real-time ML classification */
         if (ws && now - last_top_sources >= 5) {
             fe_top_source_t top[10];
             uint32_t n = fe_get_top_sources(fe, top, 10);
@@ -2244,7 +2280,7 @@ int main(int argc, char **argv)
                     ws_top[out].suspicious = 0;
                     ws_top[out].threat_score = 0.0;
                     if (fe_extract_source(fe, top[k].src_ip, &fv) == 0 &&
-                        de_classify(de, &fv, &assessment) == 0) {
+                        de_classify(de, &fv, &assessment, integration_flags.model_extension_enabled) == 0) {
                         ws_top[out].threat_score = assessment.threat_score;
                         ws_top[out].suspicious = (assessment.verdict != VERDICT_ALLOW) ? 1 : 0;
                     }
@@ -2255,7 +2291,7 @@ int main(int argc, char **argv)
             last_top_sources = now;
         }
 
-        /* Telemetry: 10s – feature_importance (from de_get_thresholds) */
+        /* Telemetry: 10s â€“ feature_importance (from de_get_thresholds) */
         if (ws && now - last_feature_importance >= 10) {
             const de_thresholds_t *dt = de_get_thresholds(de);
             if (dt) {
@@ -2282,6 +2318,32 @@ int main(int argc, char **argv)
                 wi.avg_signature_score = (threat_count_10s > 0)
                     ? (signature_sum_10s / (double)threat_count_10s)
                     : 0.0;
+                wi.avg_score_volume = (threat_count_10s > 0)
+                    ? (volume_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_entropy = (threat_count_10s > 0)
+                    ? (entropy_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_protocol = (threat_count_10s > 0)
+                    ? (protocol_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_behavioral = (threat_count_10s > 0)
+                    ? (behavioral_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_ml = (threat_count_10s > 0)
+                    ? (ml_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_l7 = (threat_count_10s > 0)
+                    ? (l7_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_anomaly = (threat_count_10s > 0)
+                    ? (anomaly_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_chi_square = (threat_count_10s > 0)
+                    ? (chi_square_sum_10s / (double)threat_count_10s)
+                    : 0.0;
+                wi.avg_score_fanin = wi.avg_fanin_score;
+                wi.avg_score_signature = wi.avg_signature_score;
                 wi.detections_last_10s = detections_10s;
                 wi.policy_arm = ps.active_arm;
                 wi.policy_updates = ps.update_count;
@@ -2295,6 +2357,14 @@ int main(int argc, char **argv)
             }
             detections_10s = 0;
             threat_sum_10s = 0.0;
+            volume_sum_10s = 0.0;
+            entropy_sum_10s = 0.0;
+            protocol_sum_10s = 0.0;
+            behavioral_sum_10s = 0.0;
+            ml_sum_10s = 0.0;
+            l7_sum_10s = 0.0;
+            anomaly_sum_10s = 0.0;
+            chi_square_sum_10s = 0.0;
             fanin_sum_10s = 0.0;
             signature_sum_10s = 0.0;
             threat_count_10s = 0;
@@ -2312,7 +2382,7 @@ int main(int argc, char **argv)
                 sentinel_feature_vector_t fv;
                 sentinel_threat_assessment_t assessment;
                 if (fe_extract_source(fe, top[k].src_ip, &fv) == 0 &&
-                    de_classify(de, &fv, &assessment) == 0) {
+                    de_classify(de, &fv, &assessment, integration_flags.model_extension_enabled) == 0) {
                     feedback_shared.src_ips[w][filled] = top[k].src_ip;
                     feedback_shared.scores[w][filled] = assessment.threat_score;
                     filled++;
@@ -2351,12 +2421,8 @@ int main(int argc, char **argv)
             if (parse_raw_packet(raw_buf, len, &fe_pkt, rx_packets, coarse_now_ns) != 0)
                 continue;
 
-            /* Reflection signature matching (bounded hint) */
-            if (integration_flags.signature_feed_enabled) {
-                fe_pkt.sig_boost = de_match_packet(de, &fe_pkt);
-            } else {
-                fe_pkt.sig_boost = 0.0;
-            }
+            /* Reflection signature matching (always enabled) */
+            fe_pkt.sig_boost = de_match_packet(de, &fe_pkt);
 
             /* Per-protocol counters for telemetry (1s traffic_rate / protocol_dist) */
             if (fe_pkt.protocol == IPPROTO_TCP) { 
@@ -2384,12 +2450,20 @@ int main(int argc, char **argv)
                     continue;
                 }
                 sentinel_threat_assessment_t assessment;
-                if (de_classify(de, &fv, &assessment) == 0) {
+                if (de_classify(de, &fv, &assessment, integration_flags.model_extension_enabled) == 0) {
                     g_last_feature_vector = fv;
                     g_has_last_feature_vector = 1;
                     g_last_chi_square_score = assessment.score_chi_square;
                     classifications_this_sec++;
                     threat_sum_10s += assessment.threat_score;
+                    volume_sum_10s += assessment.score_volume;
+                    entropy_sum_10s += assessment.score_entropy;
+                    protocol_sum_10s += assessment.score_protocol;
+                    behavioral_sum_10s += assessment.score_behavioral;
+                    ml_sum_10s += assessment.score_ml;
+                    l7_sum_10s += assessment.score_l7;
+                    anomaly_sum_10s += assessment.score_anomaly;
+                    chi_square_sum_10s += assessment.score_chi_square;
                     fanin_sum_10s += assessment.score_fanin;
                     signature_sum_10s += assessment.score_signature;
                     threat_count_10s++;
@@ -2409,7 +2483,7 @@ int main(int argc, char **argv)
                         {
                             uint64_t ts_ns = coarse_now_ns;
                             if (enforcing && assessment.verdict == VERDICT_DROP) {
-                                total_blocked++;
+                                atomic_fetch_add_explicit(&total_blocked, 1, memory_order_acq_rel);
                                 pipeline_blacklist_ip(blacklist_map_fd, assessment.src_ip, ts_ns);
                                 blocked_ips[blocked_head].ip = assessment.src_ip;
                                 blocked_ips[blocked_head].timestamp_added = ts_ns;
@@ -2417,7 +2491,7 @@ int main(int argc, char **argv)
                                 blocked_ips[blocked_head].rate_limit_pps = 0;
                                 blocked_head = (blocked_head + 1) % TELEM_IP_MAX;
                             } else if (enforcing && assessment.verdict == VERDICT_RATE_LIMIT) {
-                                total_rate_limited++;
+                                atomic_fetch_add_explicit(&total_rate_limited, 1, memory_order_acq_rel);
                                 rate_limited_ips[rate_limited_head].ip = assessment.src_ip;
                                 rate_limited_ips[rate_limited_head].timestamp_added = ts_ns;
                                 rate_limited_ips[rate_limited_head].rule_id = rule.rule_id;
@@ -2494,12 +2568,8 @@ int main(int argc, char **argv)
                 if (parse_raw_packet(pkt_data, len, &fe_pkt, rx_packets, coarse_now_ns) != 0)
                     continue;
 
-                /* Reflection signature matching (bounded hint) */
-                if (integration_flags.signature_feed_enabled) {
-                    fe_pkt.sig_boost = de_match_packet(de, &fe_pkt);
-                } else {
-                    fe_pkt.sig_boost = 0.0;
-                }
+                /* Reflection signature matching (always enabled) */
+                fe_pkt.sig_boost = de_match_packet(de, &fe_pkt);
 
                 /* Per-protocol counters for telemetry (1s traffic_rate / protocol_dist) */
                 if (fe_pkt.protocol == IPPROTO_TCP) { 
@@ -2527,12 +2597,20 @@ int main(int argc, char **argv)
                         continue;
                     }
                     sentinel_threat_assessment_t assessment;
-                    if (de_classify(de, &fv, &assessment) == 0) {
+                    if (de_classify(de, &fv, &assessment, integration_flags.model_extension_enabled) == 0) {
                         g_last_feature_vector = fv;
                         g_has_last_feature_vector = 1;
                         g_last_chi_square_score = assessment.score_chi_square;
                         classifications_this_sec++;
                         threat_sum_10s += assessment.threat_score;
+                        volume_sum_10s += assessment.score_volume;
+                        entropy_sum_10s += assessment.score_entropy;
+                        protocol_sum_10s += assessment.score_protocol;
+                        behavioral_sum_10s += assessment.score_behavioral;
+                        ml_sum_10s += assessment.score_ml;
+                        l7_sum_10s += assessment.score_l7;
+                        anomaly_sum_10s += assessment.score_anomaly;
+                        chi_square_sum_10s += assessment.score_chi_square;
                         fanin_sum_10s += assessment.score_fanin;
                         signature_sum_10s += assessment.score_signature;
                         threat_count_10s++;
@@ -2552,7 +2630,7 @@ int main(int argc, char **argv)
                             {
                                 uint64_t ts_ns = coarse_now_ns;
                                 if (enforcing && assessment.verdict == VERDICT_DROP) {
-                                    total_blocked++;
+                                    atomic_fetch_add_explicit(&total_blocked, 1, memory_order_acq_rel);
                                     pipeline_blacklist_ip(blacklist_map_fd, assessment.src_ip, ts_ns);
                                     blocked_ips[blocked_head].ip = assessment.src_ip;
                                     blocked_ips[blocked_head].timestamp_added = ts_ns;
@@ -2560,7 +2638,7 @@ int main(int argc, char **argv)
                                     blocked_ips[blocked_head].rate_limit_pps = 0;
                                     blocked_head = (blocked_head + 1) % TELEM_IP_MAX;
                                 } else if (enforcing && assessment.verdict == VERDICT_RATE_LIMIT) {
-                                    total_rate_limited++;
+                                    atomic_fetch_add_explicit(&total_rate_limited, 1, memory_order_acq_rel);
                                     rate_limited_ips[rate_limited_head].ip = assessment.src_ip;
                                     rate_limited_ips[rate_limited_head].timestamp_added = ts_ns;
                                     rate_limited_ips[rate_limited_head].rule_id = rule.rule_id;
@@ -2632,7 +2710,7 @@ int main(int argc, char **argv)
     atomic_store_explicit(&feedback_shared.stop, 1, memory_order_release);
     if (feedback_thread_started)
         pthread_join(feedback_thread, NULL);
-#ifdef __linux__
+#if SENTINEL_LINUX_RUNTIME
     if (health_listener_started)
         pthread_join(health_listener_thread_id, NULL);
 #endif
@@ -2649,7 +2727,7 @@ int main(int argc, char **argv)
         if (xsk->rx.map != NULL && xsk->rx.map_size > 0)
             munmap(xsk->rx.map, xsk->rx.map_size);
         if (xsk->umem) {
-            free(xsk->umem->frames);
+            free_umem_frames(xsk->umem);
             free(xsk->umem);
         }
     }
@@ -2659,3 +2737,4 @@ int main(int argc, char **argv)
 
     return 0;
 }
+

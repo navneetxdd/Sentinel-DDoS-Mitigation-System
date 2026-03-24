@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { AlertTriangle, CheckCircle, ShieldAlert, TrendingUp } from "lucide-react";
+import { CheckCircle, ShieldAlert, TrendingUp } from "lucide-react";
 
 type ClassificationType = "benign" | "flash_crowd" | "ddos";
 

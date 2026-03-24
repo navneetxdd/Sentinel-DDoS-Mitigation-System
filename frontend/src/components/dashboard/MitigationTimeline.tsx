@@ -58,8 +58,8 @@ const statusIcons = {
 
 export function MitigationTimeline({ entries, className }: MitigationTimelineProps) {
   return (
-    <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
-      <div className="flex items-center justify-between mb-4">
+    <div className={cn("cyber-card glow-border p-4 rounded-lg", className)}>
+      <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="font-semibold">Mitigation Log</h3>
           <p className="text-xs text-muted-foreground">Recent mitigation actions</p>
@@ -75,7 +75,7 @@ export function MitigationTimeline({ entries, className }: MitigationTimelinePro
           const isLast = index === entries.length - 1;
 
           return (
-            <div key={entry.id} className="relative flex gap-4">
+            <div key={entry.id} className="relative flex items-start gap-4">
               {/* Timeline Line */}
               {!isLast && (
                 <div className="absolute left-[17px] top-10 w-0.5 h-[calc(100%-20px)] bg-border" />
@@ -83,7 +83,7 @@ export function MitigationTimeline({ entries, className }: MitigationTimelinePro
 
               {/* Icon */}
               <div className={cn(
-                "relative z-10 p-2 rounded-md shrink-0",
+                "relative z-10 self-start p-2 rounded-md shrink-0",
                 config.bgColor,
                 "border",
                 config.borderColor
@@ -92,7 +92,7 @@ export function MitigationTimeline({ entries, className }: MitigationTimelinePro
               </div>
 
               {/* Content */}
-              <div className="flex-1 pb-6">
+              <div className={cn("flex-1", isLast ? "pb-1" : "pb-5")}>
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="flex items-center gap-2">

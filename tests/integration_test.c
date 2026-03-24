@@ -43,7 +43,7 @@ static void test_feature_to_decision_path(void)
     assert(top_flows[0].packets > 0);
 
     sentinel_threat_assessment_t ta;
-    assert(de_classify(de, &fv, &ta) == 0);
+    assert(de_classify(de, &fv, &ta, 1) == 0);
     assert(ta.threat_score >= 0.0 && ta.threat_score <= 1.0);
     assert(ta.score_ml >= 0.0 && ta.score_ml <= 1.0);
     assert(ta.score_l7 >= 0.0 && ta.score_l7 <= 1.0);
@@ -91,7 +91,7 @@ static void test_online_anomaly_path(void)
 
     sentinel_threat_assessment_t ta = {0};
     for (int i = 0; i < 48; i++) {
-        assert(de_classify(de, &base, &ta) == 0);
+        assert(de_classify(de, &base, &ta, 1) == 0);
     }
     double baseline = ta.threat_score;
 
@@ -102,7 +102,7 @@ static void test_online_anomaly_path(void)
     burst.unique_dst_ports = 600;
     burst.src_total_flows = 1200;
 
-    assert(de_classify(de, &burst, &ta) == 0);
+    assert(de_classify(de, &burst, &ta, 1) == 0);
     assert(ta.threat_score > baseline);
     assert((ta.threat_score - baseline) > 0.05);
     assert(ta.score_anomaly >= 0.0 && ta.score_anomaly <= 1.0);
@@ -172,7 +172,7 @@ static void test_anomaly_drift_resistance(void)
 
     sentinel_threat_assessment_t ta = {0};
     for (int i = 0; i < 40; i++) {
-        assert(de_classify(de, &base, &ta) == 0);
+        assert(de_classify(de, &base, &ta, 1) == 0);
     }
     double baseline = ta.threat_score;
 
@@ -186,7 +186,7 @@ static void test_anomaly_drift_resistance(void)
     double first = 0.0;
     double last = 0.0;
     for (int i = 0; i < 20; i++) {
-        assert(de_classify(de, &attack, &ta) == 0);
+        assert(de_classify(de, &attack, &ta, 1) == 0);
         if (i == 0) first = ta.threat_score;
         if (i == 19) last = ta.threat_score;
     }

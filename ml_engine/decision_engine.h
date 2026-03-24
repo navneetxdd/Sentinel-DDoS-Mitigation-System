@@ -184,10 +184,13 @@ const de_thresholds_t *de_get_thresholds(const de_context_t *ctx);
  * ============================================================================ */
 
 /*  Classify a feature vector and produce a threat assessment.
+ *  model_extension_enabled: if 1, ML activates only when baseline threat >= 0.30.
+ *                           if 0, ML is disabled entirely (baseline-only mode).
  *  Returns 0 on success. */
 int de_classify(de_context_t *ctx,
                 const sentinel_feature_vector_t *features,
-                sentinel_threat_assessment_t *out);
+                sentinel_threat_assessment_t *out,
+                int model_extension_enabled);
 
 /* ============================================================================
  * BASELINE MANAGEMENT

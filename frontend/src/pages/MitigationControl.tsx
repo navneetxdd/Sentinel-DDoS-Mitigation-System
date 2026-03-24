@@ -41,6 +41,29 @@ function formatThreatScore(value: unknown): string {
   return Number.isFinite(numeric) ? numeric.toFixed(2) : "N/A";
 }
 
+function prettyCommandName(command: string): string {
+  switch (command) {
+    case "block_all_flagged":
+      return "Block All Flagged";
+    case "apply_rate_limit":
+      return "Apply Global Rate Limit";
+    case "clear_all_blocks":
+      return "Clear All Blocks";
+    case "block_ip":
+      return "Block IP";
+    case "block_ip_port":
+      return "Block IP:Port";
+    case "unblock_ip":
+      return "Unblock IP";
+    case "enable_auto_mitigation":
+      return "Enable Auto Mitigation";
+    case "disable_auto_mitigation":
+      return "Disable Auto Mitigation";
+    default:
+      return command.replace(/_/g, " ");
+  }
+}
+
 const MitigationControl = () => {
   const ws = useSentinelWebSocket();
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -56,7 +79,7 @@ const MitigationControl = () => {
 
   const kernelDrops = ws.mitigationStatus?.kernel_dropping_enabled ?? false;
   const sdnStatus = ws.mitigationStatus?.sdn_connected;
-  const gatekeeperStatus = ws.integrationStatus?.gatekeeper_connected;
+  const dataplaneMode = ws.mitigationStatus?.dataplane_mode ?? "Unknown";
 
   // Merge live stream events with the persisted history loaded from the SQLite
   // event log on mount. Live events take precedence; persisted events fill in
@@ -274,7 +297,7 @@ const MitigationControl = () => {
           </div>
         ) : null}
 
-        <GridLayout cols={4} gap="md">
+        <GridLayout cols={3} gap="md">
           {stats.map((stat) => (
             <StatCard
               key={stat.label}
@@ -284,13 +307,10 @@ const MitigationControl = () => {
               variant={stat.variant}
             />
           ))}
-        </GridLayout>
-
-        <GridLayout cols={3} gap="md">
           <StatCard
             label="Kernel Drops"
             value={kernelDrops ? "Active" : "Disabled"}
-            unit={kernelDrops ? "eBPF" : "fallback mode"}
+            unit={dataplaneMode}
             icon={<Shield className="w-5 h-5" />}
             variant={kernelDrops ? "success" : "warning"}
           />
@@ -301,30 +321,12 @@ const MitigationControl = () => {
             icon={<Server className="w-5 h-5" />}
             variant={sdnStatus === 1 ? "success" : sdnStatus === 0 ? "danger" : "default"}
           />
-          <StatCard
-            label="Gatekeeper Sidecar"
-            value={gatekeeperStatus === 1 ? "Connected" : gatekeeperStatus === 0 ? "Unreachable" : "Unknown"}
-            unit={ws.integrationStatus?.gatekeeper_enabled ? "health probe" : "disabled"}
-            icon={<Shield className="w-5 h-5" />}
-            variant={gatekeeperStatus === 1 ? "success" : gatekeeperStatus === 0 ? "danger" : "default"}
-          />
         </GridLayout>
         {sdnStatus === 0 && ws.mitigationStatus?.sdn_last_error ? (
           <p className="text-xs text-status-danger/90 -mt-2">SDN error: {ws.mitigationStatus.sdn_last_error}</p>
         ) : null}
-        {gatekeeperStatus === 0 && ws.integrationStatus?.gatekeeper_last_error ? (
-          <p className="text-xs text-status-danger/90 -mt-2">Gatekeeper error: {ws.integrationStatus.gatekeeper_last_error}</p>
-        ) : null}
-        {ws.integrationStatus?.gatekeeper_circuit_open ? (
-          <p className="text-xs text-status-warning/90 -mt-2">
-            Gatekeeper circuit is open
-            {ws.integrationStatus.gatekeeper_next_retry_sec
-              ? ` (retry in ${ws.integrationStatus.gatekeeper_next_retry_sec}s)`
-              : ""}
-          </p>
-        ) : null}
-        {(sdnStatus === 0 || gatekeeperStatus === 0) ? (
-          <p className="text-xs text-muted-foreground mt-1">If a service shows Unreachable, ensure it is running and reachable from the pipeline host.</p>
+        {sdnStatus === 0 ? (
+          <p className="text-xs text-muted-foreground mt-1">If the SDN service shows Unreachable, ensure it is running and reachable from the pipeline host.</p>
         ) : null}
 
         <AutoMitigationToggle
@@ -338,8 +340,8 @@ const MitigationControl = () => {
           monitored={ws.mitigationStatus?.total_monitored ?? 0}
         />
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div ref={timelineRef} className="lg:col-span-2 self-start space-y-2">
+        <div className="grid grid-cols-1 gap-6">
+          <div ref={timelineRef} className="space-y-2">
             {mergedActivities.length > 0 && (
               <button
                 type="button"
@@ -403,13 +405,6 @@ const MitigationControl = () => {
                   <span className="font-medium text-sm">Apply Global Rate Limit</span>
                 </button>
                 <button
-                  onClick={() => ws.sendCommand("enable_monitoring")}
-                  className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-status-warning/10 text-status-warning border border-status-warning/20 hover:bg-status-warning/15 transition-colors"
-                >
-                  <Eye className="w-4 h-4" />
-                  <span className="font-medium text-sm">Enable Enhanced Monitoring</span>
-                </button>
-                <button
                   onClick={() => ws.sendCommand("clear_all_blocks")}
                   className="w-full flex items-center gap-3 px-4 py-3 rounded-md bg-status-success/10 text-status-success border border-status-success/20 hover:bg-status-success/15 transition-colors"
                 >
@@ -437,17 +432,12 @@ const MitigationControl = () => {
                   )}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium">{lastCommandResult.command}</span>
+                    <span className="font-medium">{prettyCommandName(lastCommandResult.command)}</span>
                     <span className="text-[11px] opacity-80">
                       {new Date(lastCommandResult.timestamp * 1000).toLocaleTimeString()}
                     </span>
                   </div>
                   <p className="mt-1 text-muted-foreground">{lastCommandResult.message}</p>
-                  {lastCommandResult.request_id ? (
-                    <p className="mt-1 font-mono text-[10px] text-muted-foreground/90">
-                      req={lastCommandResult.request_id} v{lastCommandResult.contract_version}
-                    </p>
-                  ) : null}
                 </div>
               ) : null}
             </div>

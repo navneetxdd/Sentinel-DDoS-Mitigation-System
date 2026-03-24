@@ -137,6 +137,18 @@ export interface SentinelFeatureImportance {
   policy_arm: number;
   policy_updates: number;
   policy_last_reward: number;
+
+  /* Individual threat model component scores [0,1] */
+  avg_score_volume: number;
+  avg_score_entropy: number;
+  avg_score_protocol: number;
+  avg_score_behavioral: number;
+  avg_score_ml: number;
+  avg_score_l7: number;
+  avg_score_anomaly: number;
+  avg_score_chi_square: number;
+  avg_score_fanin: number;
+  avg_score_signature: number;
 }
 
 export interface SentinelConnection {
@@ -157,6 +169,7 @@ export interface SentinelMitigationStatus {
   active_sdn_rules: number;
   auto_mitigation_enabled: boolean;
   kernel_dropping_enabled?: boolean;
+  dataplane_mode?: string;
   sdn_connected?: number; /* 1=ok, 0=failed, -1=never probed */
   sdn_last_error?: string; /* Last SDN push error for ops debugging */
 }
@@ -167,13 +180,6 @@ export interface SentinelIntegrationStatus {
   controller_extension_enabled: boolean;
   signature_feed_enabled: boolean;
   dataplane_extension_enabled: boolean;
-  gatekeeper_enabled?: boolean;
-  gatekeeper_connected?: number;
-  gatekeeper_failure_count?: number;
-  gatekeeper_failure_threshold?: number;
-  gatekeeper_circuit_open?: boolean;
-  gatekeeper_next_retry_sec?: number;
-  gatekeeper_last_error?: string;
   profile: string;
 }
 
@@ -252,6 +258,8 @@ const MAX_ACTIVITY_LOG = 100;
 const MAX_TRAFFIC_HISTORY = 60;
 const COMMAND_CONTRACT_VERSION = 1;
 const TELEMETRY_SCHEMA_VERSION = 1;
+const ACTIVITY_BATCH_MAX = 50;
+const ACTIVITY_BATCH_FLUSH_MS = 750;
 const SHAP_FEATURE_NAMES_20 = [
   "packets_per_second",
   "bytes_per_second",
@@ -336,12 +344,64 @@ function useSentinelWebSocketState(): SentinelState {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelayRef = useRef<number>(1000);
   const wsCandidateIndexRef = useRef<number>(0);
-  const explainHealthRef = useRef<{ feature_count?: number; feature_schema_hash?: string } | null>(null);
+  const explainHealthRef = useRef<{ feature_count?: number; feature_schema_hash?: string; feature_names?: string[] } | null>(null);
+  const pendingActivityBatchRef = useRef<SentinelActivity[]>([]);
+  const activityFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSentRequestIdRef = useRef<string | null>(null);
   const consecutiveConnectFailuresRef = useRef(0);
   const loggedMaxBackoffRef = useRef(false);
   const MAX_RECONNECT_DELAY_MS = 30000;
   const RECONNECT_FAILURES_BEFORE_LOG = 15;
+
+  const flushActivityBatch = useCallback(async () => {
+    if (!isExplainApiConfigured) return;
+    if (pendingActivityBatchRef.current.length === 0) return;
+
+    const batch = pendingActivityBatchRef.current.splice(0, ACTIVITY_BATCH_MAX);
+    if (batch.length === 0) return;
+
+    try {
+      await fetchExplainApi("/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ events: batch }),
+      });
+    } catch {
+      setActivitySyncFailures((n) => n + batch.length);
+    }
+
+    if (pendingActivityBatchRef.current.length > 0) {
+      if (activityFlushTimerRef.current) {
+        clearTimeout(activityFlushTimerRef.current);
+      }
+      activityFlushTimerRef.current = setTimeout(() => {
+        void flushActivityBatch();
+      }, ACTIVITY_BATCH_FLUSH_MS);
+    } else {
+      activityFlushTimerRef.current = null;
+    }
+  }, []);
+
+  const queueActivityForSync = useCallback((entry: SentinelActivity) => {
+    if (!isExplainApiConfigured) return;
+
+    pendingActivityBatchRef.current.push(entry);
+
+    if (pendingActivityBatchRef.current.length >= ACTIVITY_BATCH_MAX) {
+      if (activityFlushTimerRef.current) {
+        clearTimeout(activityFlushTimerRef.current);
+        activityFlushTimerRef.current = null;
+      }
+      void flushActivityBatch();
+      return;
+    }
+
+    if (!activityFlushTimerRef.current) {
+      activityFlushTimerRef.current = setTimeout(() => {
+        void flushActivityBatch();
+      }, ACTIVITY_BATCH_FLUSH_MS);
+    }
+  }, [flushActivityBatch]);
 
   const handleMessage = useCallback((event: MessageEvent) => {
     try {
@@ -368,15 +428,7 @@ function useSentinelWebSocketState(): SentinelState {
         case "activity_logs":
           setActivityLog((prev) => {
             const entry = msg.data as SentinelActivity;
-            if (isExplainApiConfigured) {
-              fetchExplainApi("/events", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(entry),
-              }).catch(() => {
-                setActivitySyncFailures((n) => n + 1);
-              });
-            }
+            queueActivityForSync(entry);
             const next = [entry, ...prev];
             return next.length > MAX_ACTIVITY_LOG ? next.slice(0, MAX_ACTIVITY_LOG) : next;
           });
@@ -462,7 +514,7 @@ function useSentinelWebSocketState(): SentinelState {
         console.warn("[Sentinel WS] Malformed message ignored", preview || err);
       }
     }
-  }, []);
+  }, [queueActivityForSync]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -530,8 +582,13 @@ function useSentinelWebSocketState(): SentinelState {
         wsRef.current.onclose = null;
         wsRef.current.close();
       }
+      if (activityFlushTimerRef.current) {
+        clearTimeout(activityFlushTimerRef.current);
+        activityFlushTimerRef.current = null;
+      }
+      void flushActivityBatch();
     };
-  }, [connect]);
+  }, [connect, flushActivityBatch]);
 
   // Restore activity history from the persistent SQLite event log on mount.
   // Runs once on mount; Explain API config is from env at load time.
@@ -616,6 +673,10 @@ function useSentinelWebSocketState(): SentinelState {
               : undefined,
           feature_schema_hash:
             typeof healthJson.feature_schema_hash === "string" ? healthJson.feature_schema_hash : undefined,
+          feature_names:
+            Array.isArray(healthJson.feature_names)
+              ? healthJson.feature_names.filter((v: unknown): v is string => typeof v === "string")
+              : undefined,
         };
         explainHealthRef.current = health;
       }
@@ -623,15 +684,12 @@ function useSentinelWebSocketState(): SentinelState {
       const expectedFeatureCount = health.feature_count ?? 20;
       const shapVector = fv.slice(0, expectedFeatureCount);
 
-      const localFeatureNames = SHAP_FEATURE_NAMES_20;
-      const localFeatureSchemaHash = await computeFeatureSchemaHash(localFeatureNames);
-      if (health.feature_schema_hash && health.feature_schema_hash !== localFeatureSchemaHash) {
-        setShapError(
-          `Explain API schema hash mismatch (api=${health.feature_schema_hash}, ui=${localFeatureSchemaHash}).`,
-        );
-        setShapContributions(null);
-        return;
-      }
+      const backendFeatureNames =
+        Array.isArray(health.feature_names) && health.feature_names.length >= expectedFeatureCount
+          ? health.feature_names.slice(0, expectedFeatureCount)
+          : Array.from(SHAP_FEATURE_NAMES_20).slice(0, expectedFeatureCount);
+      const featureSchemaHash =
+        health.feature_schema_hash ?? (await computeFeatureSchemaHash(backendFeatureNames));
 
       const res = await fetchExplainApi("/shap", {
         method: "POST",
@@ -639,7 +697,7 @@ function useSentinelWebSocketState(): SentinelState {
         body: JSON.stringify({
           samples: [shapVector],
           feature_count: expectedFeatureCount,
-          feature_schema_hash: localFeatureSchemaHash,
+          feature_schema_hash: featureSchemaHash,
         }),
       });
       const json = await res.json();

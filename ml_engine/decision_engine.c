@@ -32,10 +32,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
 #include <errno.h>
+#include <limits.h>
 
 #include "decision_engine.h"
 #include "ml_model.h"
@@ -159,28 +161,50 @@ static int de_add_reflection_port(de_context_t *ctx, uint16_t p)
     return 1;
 }
 
+static const char *de_skip_token_delims(const char *s)
+{
+    while (*s == ',' || *s == ';' || isspace((unsigned char)*s)) s++;
+    return s;
+}
+
+static int de_next_token(const char **cursor, char *out, size_t out_len)
+{
+    if (!cursor || !*cursor || !out || out_len < 2) return 0;
+
+    const char *s = de_skip_token_delims(*cursor);
+    if (*s == '\0') {
+        *cursor = s;
+        return 0;
+    }
+
+    size_t n = 0;
+    while (*s && *s != ',' && *s != ';' && !isspace((unsigned char)*s)) {
+        if (n + 1 >= out_len) return 0;
+        out[n++] = *s++;
+    }
+    out[n] = '\0';
+    *cursor = s;
+    return 1;
+}
+
 static uint32_t de_load_reflection_ports_from_string(de_context_t *ctx, const char *input)
 {
-    char buf[1024];
-    uint32_t added;
-    char *tok;
-    char *endp;
-    long v;
+    uint32_t added = 0;
+    const char *cursor;
+    char token[64];
 
     if (!ctx || !input || !*input) return 0;
-    (void)snprintf(buf, sizeof(buf), "%s", input);
-    added = 0;
 
-    tok = strtok(buf, ",; \t\r\n");
-    while (tok) {
+    cursor = input;
+    while (de_next_token(&cursor, token, sizeof(token))) {
+        char *endp = NULL;
         errno = 0;
-        endp = NULL;
-        v = strtol(tok, &endp, 10);
-        if (errno == 0 && endp && *endp == '\0' && v > 0 && v <= 65535) {
-            if (de_add_reflection_port(ctx, (uint16_t)v))
+        unsigned long v = strtoul(token, &endp, 10);
+        if (errno == 0 && endp && *endp == '\0' && v > 0 && v <= USHRT_MAX) {
+            if (de_add_reflection_port(ctx, (uint16_t)v)) {
                 added++;
+            }
         }
-        tok = strtok(NULL, ",; \t\r\n");
     }
     return added;
 }
@@ -197,8 +221,8 @@ static uint32_t de_load_reflection_port_from_signature_json_line(de_context_t *c
     const char *q1;
     const char *q2;
     size_t n;
-    char tokens_buf[256];
-    char *tok;
+    const char *cursor;
+    char token[64];
     long nums[8];
     int nums_count = 0;
     int saw_hex = 0;
@@ -220,21 +244,20 @@ static uint32_t de_load_reflection_port_from_signature_json_line(de_context_t *c
     memcpy(value, q1, n);
     value[n] = '\0';
 
-    (void)snprintf(tokens_buf, sizeof(tokens_buf), "%s", value);
-    tok = strtok(tokens_buf, ",; \t\r\n");
-    while (tok && nums_count < (int)(sizeof(nums) / sizeof(nums[0]))) {
+    cursor = value;
+    while (nums_count < (int)(sizeof(nums) / sizeof(nums[0])) &&
+           de_next_token(&cursor, token, sizeof(token))) {
         char *endp = NULL;
         long v;
-        if ((tok[0] == '0') && (tok[1] == 'x' || tok[1] == 'X')) {
+        if ((token[0] == '0') && (token[1] == 'x' || token[1] == 'X')) {
             saw_hex = 1;
         } else {
             errno = 0;
-            v = strtol(tok, &endp, 10);
+            v = strtol(token, &endp, 10);
             if (errno == 0 && endp && *endp == '\0' && v > 0 && v <= 65535) {
                 nums[nums_count++] = v;
             }
         }
-        tok = strtok(NULL, ",; \t\r\n");
     }
 
     if (nums_count >= 2 && nums[0] == 17) {
@@ -1143,7 +1166,8 @@ static sentinel_attack_type_t classify_attack(const sentinel_feature_vector_t *f
 
 int de_classify(de_context_t *ctx,
                 const sentinel_feature_vector_t *features,
-                sentinel_threat_assessment_t *out)
+                sentinel_threat_assessment_t *out,
+                int model_extension_enabled)
 {
     if (!ctx || !features || !out) return -1;
     memset(out, 0, sizeof(*out));
@@ -1216,14 +1240,26 @@ int de_classify(de_context_t *ctx,
     if (pre_ml_weight > 0.0) pre_ml_threat /= pre_ml_weight;
     pre_ml_threat = clamp01(pre_ml_threat);
 
+    /* ML activation gate: only apply ML if:
+     * 1. model_extension_enabled is true (flag was set)
+     * 2. baseline threat score >= 0.30 (threshold crossed) */
+    int ml_should_activate = (model_extension_enabled == 1) && (pre_ml_threat >= 0.30);
+
     double obs_mean = ((double)bl->observations_pps + (double)bl->observations_bps) * 0.5;
     double obs_factor = clamp01(obs_mean / 10.0);
     ml_runtime_score_t ml_score = score_ml_inference(
         features,
         pre_ml_threat,
         obs_factor,
-        ctx->cfg.ml_max_isolation
+        ml_should_activate ? ctx->cfg.ml_max_isolation : 0.0
     );
+
+    /* If ML should not activate, zero out ML contributions */
+    if (!ml_should_activate) {
+        ml_score.raw_score = 0.0;
+        ml_score.effective_score = 0.0;
+        ml_score.reliability = 0.0;
+    }
 
     double core_threat = ctx->cfg.weight_volume      * s_vol
                        + ctx->cfg.weight_entropy     * s_ent
