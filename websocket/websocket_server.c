@@ -348,14 +348,28 @@ static int ws_handshake(ws_context_t *ctx, int fd, const char *request)
     char accept[64];
     base64_encode(hash, 20, accept);
     
-    /* Send HTTP 101 Switching Protocols */
+    /* Send HTTP 101 Switching Protocols.
+     * RFC 6455 §4.2.2: If the client sent Sec-WebSocket-Protocol the server
+     * MUST echo back one of the requested tokens, otherwise the browser will
+     * immediately fail the connection.  We echo the validated API key. */
     char response[1024];
-    int n = snprintf(response, sizeof(response),
-        "HTTP/1.1 101 Switching Protocols\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        "Sec-WebSocket-Accept: %s\r\n"
-        "\r\n", accept);
+    int n;
+    if (ctx->cfg.api_key[0] != '\0') {
+        n = snprintf(response, sizeof(response),
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Accept: %s\r\n"
+            "Sec-WebSocket-Protocol: %s\r\n"
+            "\r\n", accept, ctx->cfg.api_key);
+    } else {
+        n = snprintf(response, sizeof(response),
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Accept: %s\r\n"
+            "\r\n", accept);
+    }
     
     return send(fd, response, n, MSG_NOSIGNAL) > 0 ? 0 : -1;
 }
