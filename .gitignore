@@ -30,6 +30,9 @@ sentinel_events.db
 *.db-shm
 all_files.txt
 .sentinel/
+data/
+os-ken-source/
+frontend/dist/
 
 # Cloned reference repos (not part of Sentinel)
 DDoS-Attack-Detection-and-Mitigation/

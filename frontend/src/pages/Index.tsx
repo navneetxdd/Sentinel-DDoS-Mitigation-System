@@ -8,6 +8,7 @@ import { TrafficChart } from "@/components/dashboard/TrafficChart";
 import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
 import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
+import { DefendedHostWidget } from "@/components/dashboard/DefendedHostWidget";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
 import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
 import {
@@ -230,7 +231,7 @@ const Index = () => {
             />
             <StatCard
               label="ML Model"
-              value={benchmarks.report?.runtime_model ?? "Random Forest"}
+              value={benchmarks.report?.runtime_model ?? "Unknown"}
               unit={typeof runtimeAccuracy === "number" ? `${(runtimeAccuracy * 100).toFixed(1)}%` : ""}
               icon={<Server className="w-5 h-5" />}
               variant="success"
@@ -243,7 +244,11 @@ const Index = () => {
               variant={sdnStatus === 1 ? "success" : sdnStatus === 0 ? "danger" : "warning"}
             />
           </GridLayout>
+          <div className="mt-4">
+            <DefendedHostWidget />
+          </div>
         </div>
+
       </div>
     </DashboardLayout>
   );

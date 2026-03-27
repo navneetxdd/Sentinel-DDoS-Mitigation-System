@@ -156,30 +156,31 @@ Use this when you want the most predictable path or when terminal spawning is un
 
 Start the stack in this order from separate terminals.
 
-Terminal 1, SDN controller:
+Terminal 1, SDN controller (Linux/WSL):
 
 ```bash
 cd /path/to/Sentinel-main
-/path/to/Sentinel-main/.venv-controller/bin/python scripts/start_ryu.py
+SENTINEL_OSKEN_SOURCE=/path/to/os-ken-source .venv-sdn/bin/python3 scripts/start_ryu.py
 ```
 
-Terminal 2, backend pipeline:
+Terminal 2, TC eBPF attachment and backend pipeline (Linux/WSL, requires sudo):
 
 ```bash
 cd /path/to/Sentinel-main
-sudo ./sentinel_pipeline -i lo -q 0 -w 8765 --controller http://127.0.0.1:8080 -v
+sudo bash scripts/attach_tc_clsact.sh lo
+sudo ./sentinel_pipeline -i lo -w 8765
 ```
 
-Terminal 3, explain API:
+Terminal 3, explain API (Windows or Linux):
 
 ```bash
 cd /path/to/Sentinel-main
-source .venv/bin/activate
-export GEMINI_API_KEY="<your_gemini_api_key>"
+export SENTINEL_WS_API_KEY="your_api_key_here"
+export GEMINI_API_KEY="your_gemini_api_key"  # optional, for AI analysis
 python3 explain_api.py --host 127.0.0.1 --port 5001
 ```
 
-Terminal 4, frontend:
+Terminal 4, frontend (Windows or Linux):
 
 ```bash
 cd /path/to/Sentinel-main/frontend
@@ -188,6 +189,16 @@ npm run dev
 ```
 
 Frontend URL: `http://localhost:5173`
+
+**Important:** The frontend requires a `.env` file at `frontend/.env` with:
+
+```
+VITE_WS_URL=ws://localhost:8765
+VITE_EXPLAIN_API_URL=http://localhost:5001
+VITE_WS_API_KEY=your_api_key_here
+```
+
+Make sure `VITE_WS_API_KEY` matches the `SENTINEL_WS_API_KEY` used by the backend and explain API.
 
 ## Prerequisites
 
@@ -239,6 +250,52 @@ The explain API currently depends on:
 - `shap`
 - `joblib`
 - `pandas`
+- `xgboost`
+
+## ML Training And Runtime Export
+
+Sentinel keeps a fixed runtime feature schema of 20 engineered features even when the source datasets use different raw columns. Each supported dataset loader maps or derives its own source columns into the same 20-feature runtime vector used by:
+
+- `benchmarks/sentinel_model.joblib`
+- `benchmarks/model_benchmark_report.json`
+- `frontend/public/model_benchmark_report.json`
+- `ml_engine/ml_model.h`
+
+Files that cannot map enough grounded features are rejected during training.
+
+### Real mixed-dataset training
+
+The verified mixed training path uses:
+
+- `himadri07/ciciot2023`
+- `dhoogla/nfunswnb15v2`
+
+You can download them through the notebook in `ml_engine/sentinel_trainer.ipynb` or place the extracted files under:
+
+- `data/ciciot2023`
+- `data/unsw`
+
+Then run the verified training command:
+
+```bash
+python3 train_ml.py \
+  --dataset-dir ./data/ciciot2023 \
+  --dataset-dir ./data/unsw \
+  --export-joblib benchmarks/sentinel_model.joblib
+```
+
+**Note**: Training project everything into a fixed 20-feature runtime schema. Files with insufficient schema mapping (below `MIN_MAPPED_FEATURES`) are automatically rejected.
+
+### Runtime model selection
+
+Training benchmarks all enabled models on the held-out split, records real measured inference latency, and chooses the runtime deployment model from the exportable candidates using validation accuracy under a latency budget.
+
+Useful knobs:
+
+```bash
+export SENTINEL_RUNTIME_MAX_INFERENCE_MS=0.20
+export SENTINEL_RUNTIME_ACCURACY_TIE_EPS=0.002
+```
 
 ## SDN Controller Setup
 
@@ -274,6 +331,8 @@ sed -i 's/import ryu/import os_ken/g' *.py
 sed -i 's/RyuApp/OSKenApp/g' *.py
 sed -i 's/RyuException/OSKenException/g' *.py
 ```
+
+On Windows development hosts using the PowerShell launcher, the repo-local `os-ken-source/` directory is **mandatory** because the packaged `os_ken` wheel often lacks `os_ken.app.wsgi`, `os_ken.app.ofctl_rest`, and `os_ken.app.simple_switch_13`. The launcher automatically injects this into `PYTHONPATH`.
 
 If your patched source is not at `~/os-ken-source`, point Sentinel at it explicitly:
 
@@ -367,7 +426,7 @@ Pipeline help:
 ### Explain API
 
 ```bash
-source .venv/bin/activate
+export SENTINEL_WS_API_KEY="your_api_key_here"
 python3 explain_api.py --host 127.0.0.1 --port 5001
 ```
 

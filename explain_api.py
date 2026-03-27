@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import ipaddress
 import json
 import math
 import os
@@ -189,7 +190,11 @@ class ExplainHandler(BaseHTTPRequestHandler):
         return default_seconds
 
     def log_message(self, format: str, *args: Any) -> None:
-        sys.stderr.write(f"[explain_api] {args[0]}\n")
+        try:
+            msg = format % args if args else format
+        except Exception:
+            msg = format
+        sys.stderr.write(f"[explain_api] {msg}\n")
 
     def _json_response(self, status: int, data: Dict[str, Any]) -> None:
         body = json.dumps(data).encode("utf-8")
@@ -243,7 +248,7 @@ class ExplainHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", ExplainHandler._cors_origin)
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Sentinel-API-Key, x-sentinel-api-key")
         self.end_headers()
 
     def do_GET(self) -> None:
@@ -815,6 +820,11 @@ def main() -> None:
         default="http://localhost:5173",
         help="Allowed CORS origin (default: http://localhost:5173 for Vite dev server)",
     )
+    parser.add_argument(
+        "--allow-insecure-public-bind",
+        action="store_true",
+        help="Allow non-loopback binding without API key or proxy auth. Not recommended.",
+    )
     args = parser.parse_args()
 
     ExplainHandler._cors_origin = args.cors_origin
@@ -876,8 +886,20 @@ def main() -> None:
     db_path = os.path.join(script_dir, "sentinel_events.db")
     ExplainHandler._init_db(db_path)
 
-    if (args.host == "0.0.0.0" and not ExplainHandler._api_key and not ExplainHandler._require_proxy_auth):  # nosec B104
-        print("[!] WARNING: Listening on 0.0.0.0 with no API key and no proxy auth. Do not expose to the internet.")
+    try:
+        is_loopback_host = ipaddress.ip_address(args.host).is_loopback
+    except ValueError:
+        is_loopback_host = args.host.lower() == "localhost"
+
+    if (not is_loopback_host and not ExplainHandler._api_key and not ExplainHandler._require_proxy_auth):  # nosec B104
+        if not args.allow_insecure_public_bind:
+            print(
+                "[!] Refusing to bind Explain API on a non-loopback host without API key or proxy auth. "
+                "Set SENTINEL_WS_API_KEY, enable proxy auth, or pass --allow-insecure-public-bind to override.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        print("[!] WARNING: Listening publicly with no API key and no proxy auth because --allow-insecure-public-bind was set.")
 
     server = ThreadingHTTPServer((args.host, args.port), ExplainHandler)
     print(f"[*] Explain API listening on http://{args.host}:{args.port}")
