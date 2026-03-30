@@ -15,6 +15,69 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@sentinel" />
     <meta name="twitter:image" content="/favicon.ico" />
+    <script>
+      (() => {
+        const loc = window.location;
+        const port = Number(loc.port || (loc.protocol === "https:" ? "443" : "80"));
+        const isDirectFrontendDevPort =
+          Number.isFinite(port) && (port === 5173 || (port >= 5200 && port <= 5220));
+        if (isDirectFrontendDevPort) {
+          return;
+        }
+
+        const apiBases = new Set([
+          "http://localhost:5001",
+          "http://127.0.0.1:5001",
+          `${loc.protocol === "https:" ? "https:" : "http:"}//${loc.hostname}:5001`,
+        ]);
+        const wsBases = new Set([
+          "ws://localhost:8765",
+          "ws://127.0.0.1:8765",
+          `${loc.protocol === "https:" ? "wss:" : "ws:"}//${loc.hostname}:8765`,
+        ]);
+        const sameOriginApiBase = `${loc.origin.replace(/\/+$/, "")}/api`;
+        const sameOriginWsBase = `${loc.protocol === "https:" ? "wss://" : "ws://"}${loc.host}/ws`;
+
+        const rewriteUrl = (value, targets, replacement) => {
+          if (typeof value !== "string") {
+            return value;
+          }
+
+          for (const target of targets) {
+            if (value === target || value.startsWith(`${target}/`)) {
+              return `${replacement}${value.slice(target.length)}`;
+            }
+          }
+
+          return value;
+        };
+
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          if (typeof input === "string") {
+            return nativeFetch(rewriteUrl(input, apiBases, sameOriginApiBase), init);
+          }
+
+          if (input instanceof Request) {
+            const rewritten = rewriteUrl(input.url, apiBases, sameOriginApiBase);
+            if (rewritten !== input.url) {
+              input = new Request(rewritten, input);
+            }
+          }
+
+          return nativeFetch(input, init);
+        };
+
+        const NativeWebSocket = window.WebSocket;
+        function SentinelWebSocket(url, protocols) {
+          return new NativeWebSocket(rewriteUrl(String(url), wsBases, sameOriginWsBase), protocols);
+        }
+
+        SentinelWebSocket.prototype = NativeWebSocket.prototype;
+        Object.setPrototypeOf(SentinelWebSocket, NativeWebSocket);
+        window.WebSocket = SentinelWebSocket;
+      })();
+    </script>
   </head>
 
   <body>

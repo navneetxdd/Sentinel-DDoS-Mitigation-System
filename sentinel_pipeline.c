@@ -7,7 +7,9 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,12 +41,14 @@
 # include <sys/syscall.h>
 # include <sys/times.h>
 # include <sys/wait.h>
+# include <sys/ioctl.h>
 # include <linux/if_xdp.h>
 # ifndef XDP_UMEM_PGOFF_FILL_RING
 # define XDP_UMEM_PGOFF_FILL_RING 0x100000000ULL
 # endif
 # include <linux/if_link.h>
 # include <linux/bpf.h>
+# include <linux/rtnetlink.h>
 # include <linux/if_packet.h>
 # include <net/if.h>
 # include <netinet/in.h>
@@ -57,7 +61,7 @@
 # include <curl/curl.h>
 #else
 /* Non-Linux editor stubs for IDE/IntelliSense only; not used at runtime on Linux. */
-# include "sentinel_pipeline_stubs.h"
+# include "sentinel_core/sentinel_pipeline_stubs.h"
 #endif
 
 #include "sentinel_core/sentinel_types.h"
@@ -66,6 +70,10 @@
 #include "sdncontrol/sdn_controller.h"
 #include "feedback/feedback.h"
 #include "websocket/websocket_server.h"
+
+#ifndef IFNAMSIZ
+#define IFNAMSIZ 64
+#endif
 
 /* ============================================================================
  * REAL SYSTEM METRICS (parse /proc)
@@ -248,6 +256,33 @@ static int parse_env_bool_default(const char *name, int default_value)
     return default_value;
 }
 
+static const char *first_nonempty_env(const char *primary, const char *alias)
+{
+    const char *raw = NULL;
+    if (primary && primary[0]) {
+        raw = getenv(primary);
+        if (raw && raw[0]) return raw;
+    }
+    if (alias && alias[0]) {
+        raw = getenv(alias);
+        if (raw && raw[0]) return raw;
+    }
+    return NULL;
+}
+
+static int parse_env_bool_alias_default(const char *primary,
+                                        const char *alias,
+                                        int default_value)
+{
+    const char *raw = first_nonempty_env(primary, alias);
+    if (!raw || !raw[0]) return default_value;
+    if (strcmp(raw, "1") == 0 || strcasecmp(raw, "true") == 0 || strcasecmp(raw, "yes") == 0 || strcasecmp(raw, "on") == 0)
+        return 1;
+    if (strcmp(raw, "0") == 0 || strcasecmp(raw, "false") == 0 || strcasecmp(raw, "no") == 0 || strcasecmp(raw, "off") == 0)
+        return 0;
+    return default_value;
+}
+
 static const char *pipeline_dataplane_mode_str(pipeline_dataplane_mode_t mode)
 {
     switch (mode) {
@@ -280,17 +315,208 @@ static int parse_command_argv(const char *command, char *storage, size_t storage
     return (argc > 0) ? 0 : -1;
 }
 
+static int parse_default_route_iface(char *out, size_t out_len)
+{
+#if SENTINEL_LINUX_RUNTIME
+    FILE *f;
+    char line[256];
+
+    if (!out || out_len == 0) return -1;
+    f = fopen("/proc/net/route", "r");
+    if (!f) return -1;
+
+    while (fgets(line, sizeof(line), f)) {
+        char iface[IFNAMSIZ] = {0};
+        unsigned long dest = 0;
+        unsigned long flags = 0;
+        int n = sscanf(line, "%15s %lx %*x %lx", iface, &dest, &flags);
+        if (n == 3 && dest == 0UL && (flags & 0x1UL) != 0UL && strcmp(iface, "lo") != 0) {
+            snprintf(out, out_len, "%s", iface);
+            fclose(f);
+            return 0;
+        }
+    }
+
+    fclose(f);
+#else
+    (void)out;
+    (void)out_len;
+#endif
+    return -1;
+}
+
+static int parse_first_non_loopback_iface(char *out, size_t out_len)
+{
+#if SENTINEL_LINUX_RUNTIME
+    FILE *f;
+    char line[256];
+
+    if (!out || out_len == 0) return -1;
+    f = fopen("/proc/net/dev", "r");
+    if (!f) return -1;
+
+    while (fgets(line, sizeof(line), f)) {
+        char iface[IFNAMSIZ] = {0};
+        char *colon = strchr(line, ':');
+        char *start = line;
+        size_t len;
+        if (!colon) continue;
+        while (*start == ' ' || *start == '\t') start++;
+        len = (size_t)(colon - start);
+        while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t')) len--;
+        if (len == 0 || len >= sizeof(iface)) continue;
+        memcpy(iface, start, len);
+        iface[len] = '\0';
+        if (strcmp(iface, "lo") == 0) continue;
+        snprintf(out, out_len, "%s", iface);
+        fclose(f);
+        return 0;
+    }
+
+    fclose(f);
+#else
+    (void)out;
+    (void)out_len;
+#endif
+    return -1;
+}
+
+static int parse_ifconf_iface(char *out, size_t out_len)
+{
+#if SENTINEL_LINUX_RUNTIME
+    int fd = -1;
+    struct ifconf ifc;
+    char buf[8192];
+
+    if (!out || out_len == 0) return -1;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+
+    memset(&ifc, 0, sizeof(ifc));
+    ifc.ifc_len = (int)sizeof(buf);
+    ifc.ifc_buf = buf;
+    if (ioctl(fd, SIOCGIFCONF, &ifc) != 0) {
+        close(fd);
+        return -1;
+    }
+
+    {
+        char *ptr = ifc.ifc_buf;
+        char *end = ifc.ifc_buf + ifc.ifc_len;
+        while (ptr + (int)sizeof(struct ifreq) <= end) {
+            struct ifreq *ifr = (struct ifreq *)ptr;
+            struct ifreq flags_req;
+            ptr += sizeof(struct ifreq);
+
+            if (!ifr->ifr_name[0])
+                continue;
+            if (strcmp(ifr->ifr_name, "lo") == 0)
+                continue;
+
+            memset(&flags_req, 0, sizeof(flags_req));
+            snprintf(flags_req.ifr_name, sizeof(flags_req.ifr_name), "%s", ifr->ifr_name);
+            if (ioctl(fd, SIOCGIFFLAGS, &flags_req) != 0)
+                continue;
+            if ((flags_req.ifr_flags & IFF_UP) == 0)
+                continue;
+            if ((flags_req.ifr_flags & IFF_LOOPBACK) != 0)
+                continue;
+
+            snprintf(out, out_len, "%s", ifr->ifr_name);
+            close(fd);
+            return 0;
+        }
+    }
+
+    close(fd);
+#else
+    (void)out;
+    (void)out_len;
+#endif
+    return -1;
+}
+
+static const char *resolve_capture_interface(const char *requested_ifname, char *out, size_t out_len)
+{
+    const char *env_iface;
+    if (!out || out_len == 0) return "eth0";
+
+    if (requested_ifname && requested_ifname[0] && strcmp(requested_ifname, "auto") != 0) {
+        snprintf(out, out_len, "%s", requested_ifname);
+        return out;
+    }
+
+    env_iface = getenv("SENTINEL_INTERFACE");
+    if (!env_iface || !env_iface[0])
+        env_iface = getenv("SENTINEL_CAPTURE_IFACE");
+    if (env_iface && env_iface[0] && strcmp(env_iface, "auto") != 0) {
+        snprintf(out, out_len, "%s", env_iface);
+        return out;
+    }
+
+    if (parse_default_route_iface(out, out_len) == 0)
+        return out;
+    if (parse_ifconf_iface(out, out_len) == 0)
+        return out;
+    if (parse_first_non_loopback_iface(out, out_len) == 0)
+        return out;
+
+    snprintf(out, out_len, "%s", "eth0");
+    return out;
+}
+
 static void load_integration_flags(pipeline_integration_flags_t *flags)
 {
     const char *profile;
+    int default_intel = 1;
+    int default_model = 1;
+    int default_controller = 1;
+    int default_signature = 1;
+    int default_dataplane = 1;
+
     if (!flags) return;
-    flags->intel_feed_enabled = parse_env_bool_default("SENTINEL_INTEL_FEED_ENABLED", 1);
-    flags->model_extension_enabled = parse_env_bool_default("SENTINEL_MODEL_EXTENSION_ENABLED", 1);
-    flags->controller_extension_enabled = parse_env_bool_default("SENTINEL_CONTROLLER_EXTENSION_ENABLED", 1);
-    flags->signature_feed_enabled = parse_env_bool_default("SENTINEL_SIGNATURE_FEED_ENABLED", 1);
-    flags->dataplane_extension_enabled = parse_env_bool_default("SENTINEL_DATAPLANE_EXTENSION_ENABLED", 1);
-    profile = getenv("SENTINEL_INTEGRATION_PROFILE");
-    snprintf(flags->profile, sizeof(flags->profile), "%s", (profile && profile[0]) ? profile : "production");
+
+    profile = first_nonempty_env("SENTINEL_PROFILE", "SENTINEL_INTEGRATION_PROFILE");
+    if (!profile || !profile[0]) profile = "production";
+
+    if (strcasecmp(profile, "baseline") == 0) {
+        default_intel = 0;
+        default_model = 0;
+        default_controller = 0;
+        default_signature = 0;
+        default_dataplane = 0;
+    } else if (strcasecmp(profile, "progressive") == 0) {
+        default_controller = 0;
+        default_dataplane = 0;
+    }
+
+    flags->intel_feed_enabled = parse_env_bool_alias_default(
+        "SENTINEL_INTEL_FEED_ENABLED",
+        "SENTINEL_ENABLE_INTEL_FEED",
+        default_intel
+    );
+    flags->model_extension_enabled = parse_env_bool_alias_default(
+        "SENTINEL_MODEL_EXTENSION_ENABLED",
+        "SENTINEL_ENABLE_MODEL_EXTENSION",
+        default_model
+    );
+    flags->controller_extension_enabled = parse_env_bool_alias_default(
+        "SENTINEL_CONTROLLER_EXTENSION_ENABLED",
+        "SENTINEL_ENABLE_CONTROLLER_EXTENSION",
+        default_controller
+    );
+    flags->signature_feed_enabled = parse_env_bool_alias_default(
+        "SENTINEL_SIGNATURE_FEED_ENABLED",
+        "SENTINEL_ENABLE_SIGNATURE_FEED",
+        default_signature
+    );
+    flags->dataplane_extension_enabled = parse_env_bool_alias_default(
+        "SENTINEL_DATAPLANE_EXTENSION_ENABLED",
+        "SENTINEL_ENABLE_DATAPLANE_EXTENSION",
+        default_dataplane
+    );
+    snprintf(flags->profile, sizeof(flags->profile), "%s", profile);
 }
 
 
@@ -802,9 +1028,12 @@ static void free_umem_frames(struct xdp_umem *umem)
 }
 
 /* ============================================================================
- * PACKET PARSING (Raw L2 -> featureextractor metadata)
+ * PACKET PARSING (Ethernet L2 or raw L3 TUN/Tailscale -> feature metadata)
  * ============================================================================ */
 
+#ifndef ETHERTYPE_IP
+#define ETHERTYPE_IP 0x0800
+#endif
 #ifndef ETHERTYPE_IPV6
 #define ETHERTYPE_IPV6 0x86dd
 #endif
@@ -815,19 +1044,105 @@ static inline uint32_t hash_ipv6_to_32(const uint8_t *addr16)
     return fnv1a_hash(addr16, 16);
 }
 
+/* TUN/Tailscale/wg deliver IPv4/IPv6 without an Ethernet header; L2 capture uses 802.3 framing. */
+static int g_capture_is_l3 = 0;
+
+#if SENTINEL_LINUX_RUNTIME
+static int sentinel_iface_is_l3_tunnel(const char *ifname)
+{
+    const char *o = getenv("SENTINEL_L3_CAPTURE");
+    if (o && o[0]) {
+        if (strcmp(o, "1") == 0 || strcasecmp(o, "true") == 0 || strcasecmp(o, "yes") == 0)
+            return 1;
+        if (strcmp(o, "0") == 0 || strcasecmp(o, "false") == 0 || strcasecmp(o, "no") == 0)
+            return 0;
+    }
+    if (!ifname || !ifname[0])
+        return 0;
+    if (strncasecmp(ifname, "tailscale", 9) == 0)
+        return 1;
+    if (strncasecmp(ifname, "tun", 3) == 0)
+        return 1;
+    if (strncasecmp(ifname, "wg", 2) == 0)
+        return 1;
+    return 0;
+}
+
+static int check_sentinel_trial_expiry(void)
+{
+    const char *exp = getenv("SENTINEL_TRIAL_EXPIRES_UNIX");
+    if (!exp || !exp[0])
+        return 0;
+    char *end = NULL;
+    unsigned long long t = strtoull(exp, &end, 10);
+    if (end == exp || *end != '\0') {
+        LOG_WARN("Invalid SENTINEL_TRIAL_EXPIRES_UNIX, ignoring license check");
+        return 0;
+    }
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
+        return 0;
+    if ((uint64_t)ts.tv_sec > (uint64_t)t) {
+        fprintf(stderr, "[FATAL] Sentinel trial period expired (SENTINEL_TRIAL_EXPIRES_UNIX=%s)\n", exp);
+        return -1;
+    }
+    LOG_INFO("Trial / entitlement window active until UNIX time %llu", (unsigned long long)t);
+    return 0;
+}
+#else
+static int sentinel_iface_is_l3_tunnel(const char *ifname)
+{
+    (void)ifname;
+    return 0;
+}
+static int check_sentinel_trial_expiry(void)
+{
+    return 0;
+}
+#endif
+
 static int parse_raw_packet(const char *frame_data, uint32_t len, fe_packet_t *pkt, uint64_t pkt_id, uint64_t now_ns)
 {
-    if (len < sizeof(struct ether_header)) return -1;
-
-    const struct ether_header *eth = (const struct ether_header *)frame_data;
-    uint16_t ether_type = ntohs(eth->ether_type);
-    const char *ip_start = frame_data + sizeof(struct ether_header);
-    uint32_t ip_len = len - sizeof(struct ether_header);
+    uint16_t ether_type;
+    const char *ip_start;
+    uint32_t ip_len;
 
     memset(pkt, 0, sizeof(*pkt));
     pkt->packet_id = pkt_id;
     pkt->direction = 0;
     pkt->timestamp_ns = now_ns;
+
+    if (g_capture_is_l3) {
+        if (len < 1u)
+            return -1;
+        {
+            uint8_t ip_ver = ((const uint8_t *)frame_data)[0] >> 4;
+            if (ip_ver == 4) {
+                if (len < (uint32_t)sizeof(struct iphdr))
+                    return -1;
+                ether_type = ETHERTYPE_IP;
+                ip_start = frame_data;
+                ip_len = len;
+            } else if (ip_ver == 6) {
+                if (len < 40u)
+                    return -1;
+                ether_type = ETHERTYPE_IPV6;
+                ip_start = frame_data;
+                ip_len = len;
+            } else {
+                return -1;
+            }
+        }
+    } else {
+        if (len < sizeof(struct ether_header))
+            return -1;
+        {
+            const struct ether_header *eth = (const struct ether_header *)frame_data;
+            ether_type = ntohs(eth->ether_type);
+            ip_start = frame_data + sizeof(struct ether_header);
+            ip_len = len - (uint32_t)sizeof(struct ether_header);
+        }
+    }
 
     if (ether_type == ETHERTYPE_IP) {
         /* IPv4 */
@@ -978,6 +1293,169 @@ parsed_l3_only:
  * MAIN ZERO-COPY LOOP
  * ============================================================================ */
 
+#if SENTINEL_LINUX_RUNTIME
+
+#ifndef NLMSG_TAIL
+#define NLMSG_TAIL(nmsg) ((struct rtattr *)(((char *)(nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
+#endif
+
+static int nl_addattr_l(struct nlmsghdr *n, size_t maxlen, int type, const void *data, size_t alen)
+{
+    size_t len = RTA_LENGTH(alen);
+    size_t new_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
+    struct rtattr *rta;
+    if (new_len > maxlen)
+        return -1;
+    rta = NLMSG_TAIL(n);
+    rta->rta_type = (unsigned short)type;
+    rta->rta_len = (unsigned short)len;
+    if (alen > 0 && data)
+        memcpy(RTA_DATA(rta), data, alen);
+    n->nlmsg_len = (unsigned int)new_len;
+    return 0;
+}
+
+static struct rtattr *nl_addattr_nest(struct nlmsghdr *n, size_t maxlen, int type)
+{
+    struct rtattr *start = NLMSG_TAIL(n);
+    if (nl_addattr_l(n, maxlen, type, NULL, 0) != 0)
+        return NULL;
+    return start;
+}
+
+static void nl_addattr_nest_end(struct nlmsghdr *n, struct rtattr *nest)
+{
+    if (!nest) return;
+    nest->rta_len = (unsigned short)((char *)NLMSG_TAIL(n) - (char *)nest);
+}
+
+static int rtnl_set_link_xdp_fd(int ifindex, int prog_fd, __u32 xdp_flags)
+{
+#if SENTINEL_LINUX_RUNTIME
+    struct {
+        struct nlmsghdr nh;
+        struct ifinfomsg ifm;
+        char buf[256];
+    } req;
+    struct sockaddr_nl nladdr;
+    char ackbuf[4096];
+    ssize_t nread;
+    int rem;
+    struct nlmsghdr *h;
+    int fd = -1;
+    struct rtattr *xdp;
+
+    memset(&req, 0, sizeof(req));
+    req.nh.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+    req.nh.nlmsg_type = RTM_SETLINK;
+    req.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    req.nh.nlmsg_seq = 1;
+    req.ifm.ifi_family = AF_UNSPEC;
+    req.ifm.ifi_index = ifindex;
+
+    xdp = nl_addattr_nest(&req.nh, sizeof(req), IFLA_XDP);
+    if (!xdp) return -1;
+    if (nl_addattr_l(&req.nh, sizeof(req), IFLA_XDP_FD, &prog_fd, sizeof(prog_fd)) != 0)
+        return -1;
+    if (nl_addattr_l(&req.nh, sizeof(req), IFLA_XDP_FLAGS, &xdp_flags, sizeof(xdp_flags)) != 0)
+        return -1;
+    nl_addattr_nest_end(&req.nh, xdp);
+
+    fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (fd < 0) return -1;
+
+    memset(&nladdr, 0, sizeof(nladdr));
+    nladdr.nl_family = AF_NETLINK;
+    if (sendto(fd, &req, req.nh.nlmsg_len, 0, (struct sockaddr *)&nladdr, sizeof(nladdr)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    nread = recv(fd, ackbuf, sizeof(ackbuf), 0);
+    close(fd);
+    if (nread < 0)
+        return -1;
+
+    rem = (int)nread;
+    for (h = (struct nlmsghdr *)ackbuf; NLMSG_OK(h, rem); h = NLMSG_NEXT(h, rem)) {
+        if (h->nlmsg_type == NLMSG_ERROR) {
+            struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(h);
+            if (err->error == 0)
+                return 0;
+            errno = (err->error < 0) ? -err->error : err->error;
+            return -1;
+        }
+    }
+#else
+    (void)ifindex;
+    (void)prog_fd;
+    (void)xdp_flags;
+#endif
+    return -1;
+}
+
+static int maybe_attach_xdp_driver_mode(const char *ifname)
+{
+#if SENTINEL_LINUX_RUNTIME
+    const char *pin_path = getenv("SENTINEL_XDP_PROG_PIN_PATH");
+    int allow_skb_fallback = parse_env_bool_default("SENTINEL_XDP_ALLOW_SKB_FALLBACK", 1);
+    int ifindex;
+    int prog_fd;
+    __u32 flags;
+    union bpf_attr get_attr;
+
+    if (!pin_path || !pin_path[0])
+        return 0;
+
+    ifindex = (int)if_nametoindex(ifname);
+    if (ifindex <= 0) {
+        LOG_WARN("XDP driver attach skipped: invalid interface %s", ifname);
+        return -1;
+    }
+
+    memset(&get_attr, 0, sizeof(get_attr));
+    get_attr.pathname = (uintptr_t)pin_path;
+    prog_fd = bpf(BPF_OBJ_GET, &get_attr, sizeof(get_attr));
+    if (prog_fd < 0) {
+        LOG_WARN("XDP driver attach skipped: unable to open pinned program %s (%s)", pin_path, strerror(errno));
+        return -1;
+    }
+
+    flags = XDP_FLAGS_DRV_MODE | XDP_FLAGS_UPDATE_IF_NOEXIST;
+    if (rtnl_set_link_xdp_fd(ifindex, prog_fd, flags) == 0) {
+        LOG_INFO("XDP attached in driver mode (flags=0x%x) on %s", flags, ifname);
+        close(prog_fd);
+        return 0;
+    }
+
+    LOG_WARN("XDP driver-mode attach failed on %s (%s)", ifname, strerror(errno));
+    if (allow_skb_fallback) {
+        flags = XDP_FLAGS_SKB_MODE | XDP_FLAGS_UPDATE_IF_NOEXIST;
+        if (rtnl_set_link_xdp_fd(ifindex, prog_fd, flags) == 0) {
+            LOG_WARN("XDP attached in skb mode fallback (flags=0x%x) on %s", flags, ifname);
+            close(prog_fd);
+            return 0;
+        }
+        LOG_WARN("XDP skb fallback attach also failed on %s (%s)", ifname, strerror(errno));
+    }
+
+    close(prog_fd);
+#else
+    (void)ifname;
+#endif
+    return -1;
+}
+
+#else
+
+static int maybe_attach_xdp_driver_mode(const char *ifname)
+{
+    (void)ifname;
+    return 0;
+}
+
+#endif
+
 /* 
  * AF_XDP socket and UMEM initialization.
  * This physically binds the userspace daemon to the NIC driver queue.
@@ -1060,6 +1538,10 @@ static struct xsk_socket_info* configure_xsk(const char *ifname, int queue_id, i
         free(xsk);
         return NULL;
     }
+
+    /* Best effort: request pinned XDP program attach with driver-mode priority. */
+    (void)maybe_attach_xdp_driver_mode(ifname);
+
     sxdp.sxdp_queue_id = queue_id;
     sxdp.sxdp_flags = 0;
 
@@ -1276,8 +1758,178 @@ static void pipeline_clear_blacklist_map(int map_fd)
 
 typedef struct { de_context_t *de; ws_context_t *ws; sdn_context_t *sdn; } ws_cmd_ctx_t;
 static ws_cmd_ctx_t ws_cmd_ctx_storage;
-static _Atomic int g_auto_mitigation_enabled = 1;
-static _Atomic int g_sdn_connected = -1;  /* -1=never probed, 0=last push failed, 1=last push ok */
+
+#define SENTINEL_SHARED_STATE_MAGIC 0x53544c53u /* STLS */
+#define SENTINEL_SHARED_STATE_VERSION 1u
+
+typedef struct sentinel_shared_state_s {
+    uint32_t magic;
+    uint32_t version;
+    char capture_interface[IFNAMSIZ];
+    _Atomic int dataplane_mode;
+    _Atomic uint64_t last_update_ns;
+    _Atomic uint64_t rx_packets_total;
+    _Atomic uint64_t packets_per_sec;
+    _Atomic uint64_t bytes_per_sec;
+    _Atomic uint32_t active_flows;
+    _Atomic uint32_t active_sources;
+    _Atomic uint32_t total_blocked;
+    _Atomic uint32_t total_rate_limited;
+    _Atomic uint32_t total_monitored;
+    _Atomic uint32_t ml_classifications_per_sec;
+    _Atomic uint32_t skipped_classifications_per_sec;
+    _Atomic int auto_mitigation_enabled;
+    _Atomic int sdn_connected;  /* -1=never probed, 0=last push failed, 1=last push ok */
+    _Atomic uint32_t pending_clear_rate_limit_ip;
+    _Atomic int pending_clear_rate_limit;
+    _Atomic int has_pending_unblock_ip;
+    _Atomic uint32_t pending_unblock_ip;
+    _Atomic int pending_block_all;
+    _Atomic int pending_clear_all;
+} sentinel_shared_state_t;
+
+static sentinel_shared_state_t g_shared_state_local;
+static sentinel_shared_state_t *g_shared_state = &g_shared_state_local;
+
+#if SENTINEL_LINUX_RUNTIME
+static int g_shared_state_fd = -1;
+static int g_shared_state_uses_mmap = 0;
+#endif
+
+static void shared_state_defaults(sentinel_shared_state_t *st)
+{
+    if (!st) return;
+    memset(st, 0, sizeof(*st));
+    st->magic = SENTINEL_SHARED_STATE_MAGIC;
+    st->version = SENTINEL_SHARED_STATE_VERSION;
+    snprintf(st->capture_interface, sizeof(st->capture_interface), "%s", "auto");
+    atomic_init(&st->dataplane_mode, (int)PIPELINE_DATAPLANE_AF_XDP_AUTO);
+    atomic_init(&st->last_update_ns, 0ULL);
+    atomic_init(&st->rx_packets_total, 0ULL);
+    atomic_init(&st->packets_per_sec, 0ULL);
+    atomic_init(&st->bytes_per_sec, 0ULL);
+    atomic_init(&st->active_flows, 0U);
+    atomic_init(&st->active_sources, 0U);
+    atomic_init(&st->total_blocked, 0U);
+    atomic_init(&st->total_rate_limited, 0U);
+    atomic_init(&st->total_monitored, 0U);
+    atomic_init(&st->ml_classifications_per_sec, 0U);
+    atomic_init(&st->skipped_classifications_per_sec, 0U);
+    atomic_init(&st->auto_mitigation_enabled, 1);
+    atomic_init(&st->sdn_connected, -1);
+    atomic_init(&st->pending_clear_rate_limit_ip, 0u);
+    atomic_init(&st->pending_clear_rate_limit, 0);
+    atomic_init(&st->has_pending_unblock_ip, 0);
+    atomic_init(&st->pending_unblock_ip, 0u);
+    atomic_init(&st->pending_block_all, 0);
+    atomic_init(&st->pending_clear_all, 0);
+}
+
+static void shared_state_publish_metrics(sentinel_shared_state_t *st,
+                                         const char *ifname,
+                                         pipeline_dataplane_mode_t mode,
+                                         uint64_t rx_total,
+                                         uint64_t pps,
+                                         uint64_t bytes_per_sec,
+                                         uint32_t active_flows,
+                                         uint32_t active_sources,
+                                         uint32_t total_blocked,
+                                         uint32_t total_rate_limited,
+                                         uint32_t total_monitored,
+                                         uint32_t ml_cls_per_sec,
+                                         uint32_t skipped_cls_per_sec)
+{
+    struct timespec ts;
+    uint64_t now_ns = 0;
+    if (!st) return;
+
+    if (ifname && ifname[0])
+        snprintf(st->capture_interface, sizeof(st->capture_interface), "%s", ifname);
+
+    atomic_store_explicit(&st->dataplane_mode, (int)mode, memory_order_release);
+    atomic_store_explicit(&st->rx_packets_total, rx_total, memory_order_release);
+    atomic_store_explicit(&st->packets_per_sec, pps, memory_order_release);
+    atomic_store_explicit(&st->bytes_per_sec, bytes_per_sec, memory_order_release);
+    atomic_store_explicit(&st->active_flows, active_flows, memory_order_release);
+    atomic_store_explicit(&st->active_sources, active_sources, memory_order_release);
+    atomic_store_explicit(&st->total_blocked, total_blocked, memory_order_release);
+    atomic_store_explicit(&st->total_rate_limited, total_rate_limited, memory_order_release);
+    atomic_store_explicit(&st->total_monitored, total_monitored, memory_order_release);
+    atomic_store_explicit(&st->ml_classifications_per_sec, ml_cls_per_sec, memory_order_release);
+    atomic_store_explicit(&st->skipped_classifications_per_sec, skipped_cls_per_sec, memory_order_release);
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+        now_ns = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+    atomic_store_explicit(&st->last_update_ns, now_ns, memory_order_release);
+}
+
+static void shared_state_init(void)
+{
+    shared_state_defaults(&g_shared_state_local);
+    g_shared_state = &g_shared_state_local;
+
+#if SENTINEL_LINUX_RUNTIME
+    {
+        const char *backend = getenv("SENTINEL_SHARED_STATE_BACKEND");
+        const char *shm_name = getenv("SENTINEL_SHARED_STATE_NAME");
+        void *mapped;
+
+        if (backend && backend[0] && strcasecmp(backend, "shm") != 0) {
+            LOG_INFO("Shared state backend set to local process memory");
+            return;
+        }
+        if (!shm_name || !shm_name[0]) shm_name = "/sentinel_state_v1";
+
+        g_shared_state_fd = shm_open(shm_name, O_RDWR | O_CREAT, 0660);
+        if (g_shared_state_fd < 0) {
+            LOG_WARN("Shared state shm_open failed (%s). Continuing with local state.", strerror(errno));
+            return;
+        }
+        if (ftruncate(g_shared_state_fd, (off_t)sizeof(sentinel_shared_state_t)) != 0) {
+            LOG_WARN("Shared state ftruncate failed (%s). Continuing with local state.", strerror(errno));
+            close(g_shared_state_fd);
+            g_shared_state_fd = -1;
+            return;
+        }
+
+        mapped = mmap(NULL,
+                      sizeof(sentinel_shared_state_t),
+                      PROT_READ | PROT_WRITE,
+                      MAP_SHARED,
+                      g_shared_state_fd,
+                      0);
+        if (mapped == MAP_FAILED) {
+            LOG_WARN("Shared state mmap failed (%s). Continuing with local state.", strerror(errno));
+            close(g_shared_state_fd);
+            g_shared_state_fd = -1;
+            return;
+        }
+
+        g_shared_state = (sentinel_shared_state_t *)mapped;
+        g_shared_state_uses_mmap = 1;
+
+        if (g_shared_state->magic != SENTINEL_SHARED_STATE_MAGIC ||
+            g_shared_state->version != SENTINEL_SHARED_STATE_VERSION) {
+            shared_state_defaults(g_shared_state);
+        }
+        LOG_INFO("Shared state backend enabled: POSIX SHM (%s)", shm_name);
+    }
+#endif
+}
+
+static void shared_state_destroy(void)
+{
+#if SENTINEL_LINUX_RUNTIME
+    if (g_shared_state_uses_mmap && g_shared_state) {
+        munmap(g_shared_state, sizeof(sentinel_shared_state_t));
+        g_shared_state = &g_shared_state_local;
+        g_shared_state_uses_mmap = 0;
+    }
+    if (g_shared_state_fd >= 0) {
+        close(g_shared_state_fd);
+        g_shared_state_fd = -1;
+    }
+#endif
+}
 
 static sentinel_feature_vector_t g_last_feature_vector;
 static int g_has_last_feature_vector = 0;
@@ -1315,8 +1967,6 @@ static void fv_to_raw_vector(const sentinel_feature_vector_t *f,
 
 /* Pending clear_rate_limit: main loop processes, cmd handler sets */
 #define CLEARED_RATE_LIMIT_MAX 64
-static _Atomic uint32_t g_pending_clear_rate_limit_ip = 0;
-static _Atomic int g_pending_clear_rate_limit = 0;
 static uint32_t g_cleared_rate_limits[CLEARED_RATE_LIMIT_MAX];
 static int g_cleared_rate_limit_count = 0;
 
@@ -1326,11 +1976,103 @@ static int g_blacklist_map_fd = -1;
 /* Contributor threshold: only consider IPs that contribute >= this % of top-source traffic (0 = disabled). */
 static double g_contributor_threshold_pct = 0.0;
 
+/* Dashboard simulation: 0=off, 1=flash crowd, 2=ddos (telemetry overlay only; no kernel/dataplane changes). */
+static atomic_int g_pipeline_sim_mode = ATOMIC_VAR_INIT(0);
+
 /* Pending unblock_ip, block_all_flagged, clear_all_blocks: main loop processes, cmd handler sets */
-static _Atomic int g_has_pending_unblock_ip = 0;
-static _Atomic uint32_t g_pending_unblock_ip = 0;
-static _Atomic int g_pending_block_all = 0;
-static _Atomic int g_pending_clear_all = 0;
+
+static uint32_t pipeline_sim_src_ip_ipv4(void)
+{
+    const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
+    if (sim_ip && sim_ip[0]) {
+        struct in_addr ia;
+        if (inet_pton(AF_INET, sim_ip, &ia) == 1)
+            return ia.s_addr;
+    }
+    return htonl(0xC0A80101); /* 192.168.1.1 */
+}
+
+static void pipeline_apply_sim_traffic_overlay(int mode, ws_metrics_t *wm, ws_traffic_rate_t *tr, ws_protocol_dist_t *pd)
+{
+    if (!wm || !tr || !pd) return;
+    if (mode == 2) {
+        wm->packets_per_sec = 750000;
+        wm->bytes_per_sec = 500000000ULL;
+        wm->active_flows = 85000;
+        wm->active_sources = 3200;
+        wm->ml_classifications_per_sec = 120000;
+        tr->total_pps = 750000;
+        tr->total_bps = 4000000000ULL;
+        tr->tcp_pps = 700000;
+        tr->udp_pps = 40000;
+        tr->icmp_pps = 5000;
+        tr->other_pps = 5000;
+        pd->tcp_percent = 93.0;
+        pd->udp_percent = 5.3;
+        pd->icmp_percent = 0.7;
+        pd->other_percent = 1.0;
+        pd->tcp_bytes = tr->tcp_pps * 600ULL;
+        pd->udp_bytes = tr->udp_pps * 200ULL;
+        pd->icmp_bytes = tr->icmp_pps * 64ULL;
+        pd->other_bytes = tr->other_pps * 128ULL;
+    } else if (mode == 1) {
+        wm->packets_per_sec = 120000;
+        wm->bytes_per_sec = 90000000ULL;
+        wm->active_flows = 40000;
+        wm->active_sources = 12000;
+        wm->ml_classifications_per_sec = 45000;
+        tr->total_pps = 120000;
+        tr->total_bps = 750000000ULL;
+        tr->tcp_pps = 70000;
+        tr->udp_pps = 45000;
+        tr->icmp_pps = 2000;
+        tr->other_pps = 3000;
+        pd->tcp_percent = 58.0;
+        pd->udp_percent = 37.5;
+        pd->icmp_percent = 2.0;
+        pd->other_percent = 2.5;
+        pd->tcp_bytes = tr->tcp_pps * 1500ULL;
+        pd->udp_bytes = tr->udp_pps * 512ULL;
+        pd->icmp_bytes = tr->icmp_pps * 64ULL;
+        pd->other_bytes = tr->other_pps * 256ULL;
+    }
+}
+
+static void pipeline_apply_sim_feature_overlay(int mode, ws_feature_importance_t *wi)
+{
+    if (!wi) return;
+    if (mode == 2) {
+        wi->avg_threat_score = 0.88;
+        wi->avg_score_volume = 0.95;
+        wi->avg_score_entropy = 0.88;
+        wi->avg_score_protocol = 0.82;
+        wi->avg_score_behavioral = 0.75;
+        wi->avg_score_ml = 0.90;
+        wi->avg_score_l7 = 0.40;
+        wi->avg_score_anomaly = 0.92;
+        wi->avg_score_chi_square = 0.85;
+        wi->avg_fanin_score = 0.78;
+        wi->avg_score_fanin = 0.78;
+        wi->avg_signature_score = 0.65;
+        wi->avg_score_signature = 0.65;
+        wi->detections_last_10s = 450;
+    } else if (mode == 1) {
+        wi->avg_threat_score = 0.42;
+        wi->avg_score_volume = 0.55;
+        wi->avg_score_entropy = 0.38;
+        wi->avg_score_protocol = 0.45;
+        wi->avg_score_behavioral = 0.40;
+        wi->avg_score_ml = 0.35;
+        wi->avg_score_l7 = 0.30;
+        wi->avg_score_anomaly = 0.36;
+        wi->avg_score_chi_square = 0.32;
+        wi->avg_fanin_score = 0.28;
+        wi->avg_score_fanin = 0.28;
+        wi->avg_signature_score = 0.15;
+        wi->avg_score_signature = 0.15;
+        wi->detections_last_10s = 85;
+    }
+}
 
 static void ws_emit_command_result(ws_cmd_ctx_t *ctx, const char *cmd, const char *request_id,
                                    uint32_t contract_version, int success, const char *fmt, ...)
@@ -1381,19 +2123,12 @@ static int ws_parse_double_arg(const char *arg, double *out)
     return 1;
 }
 
-#if !defined(NDEBUG) || defined(SENTINEL_ENABLE_SIM_COMMANDS)
-#define SENTINEL_SIM_COMMANDS_ENABLED 1
-#else
-#define SENTINEL_SIM_COMMANDS_ENABLED 0
-#endif
-
 static int ws_sim_commands_enabled(void)
 {
-#if SENTINEL_SIM_COMMANDS_ENABLED
-    /* Require explicit runtime opt-in even in debug builds. */
-    return parse_env_bool_default("SENTINEL_ALLOW_SIM_COMMANDS", 0);
-#else
+#if defined(SENTINEL_DISABLE_SIM_COMMANDS) && SENTINEL_DISABLE_SIM_COMMANDS
     return 0;
+#else
+    return parse_env_bool_default("SENTINEL_ALLOW_SIM_COMMANDS", 0);
 #endif
 }
 
@@ -1464,7 +2199,7 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
                 rule.threat_score = 1.0;
                 rule.created_ns = (uint64_t)time(NULL) * 1000000000ULL;
                 if (sdn_push_rule(c->sdn, &rule) == 0)
-                    LOG_INFO("[WS-CMD] block_ip_port %s:%u â€” SDN rule pushed", arg, (unsigned)port_host);
+                    LOG_INFO("[WS-CMD] block_ip_port %s:%u - SDN rule pushed", arg, (unsigned)port_host);
             }
             LOG_INFO("[WS-CMD] block_ip_port %s", arg);
             ws_emit_command_result(c, cmd, request_id, contract_version, 1, "blocked %s", arg);
@@ -1475,8 +2210,8 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
     }
     else if (strcmp(cmd, "unblock_ip") == 0 && has_valid_ip_arg) {
         de_remove_denylist(c->de, ia.s_addr);
-        atomic_store_explicit(&g_pending_unblock_ip, ia.s_addr, memory_order_release);
-        atomic_store_explicit(&g_has_pending_unblock_ip, 1, memory_order_release);
+        atomic_store_explicit(&g_shared_state->pending_unblock_ip, ia.s_addr, memory_order_release);
+        atomic_store_explicit(&g_shared_state->has_pending_unblock_ip, 1, memory_order_release);
         LOG_INFO("[WS-CMD] unblock_ip %s", arg);
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "unblocked %s", arg);
     }
@@ -1491,53 +2226,53 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "removed %s from whitelist", arg);
     }
     else if (strcmp(cmd, "block_all_flagged") == 0) {
-        atomic_store_explicit(&g_pending_block_all, 1, memory_order_release);
-        LOG_INFO("[WS-CMD] block_all_flagged â€” will take effect on next telemetry cycle");
+        atomic_store_explicit(&g_shared_state->pending_block_all, 1, memory_order_release);
+        LOG_INFO("[WS-CMD] block_all_flagged - will take effect on next telemetry cycle");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "queued block for all flagged sources");
     }
     else if (strcmp(cmd, "clear_all_blocks") == 0) {
-        atomic_store_explicit(&g_pending_clear_all, 1, memory_order_release);
+        atomic_store_explicit(&g_shared_state->pending_clear_all, 1, memory_order_release);
         LOG_INFO("[WS-CMD] clear_all_blocks");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "queued clear for all block/rate-limit entries");
     }
     else if (strcmp(cmd, "apply_rate_limit") == 0) {
         de_set_global_rate_limit(c->de, 0.40, 0.70);
-        LOG_INFO("[WS-CMD] apply_rate_limit â€” thresholds set to 0.40/0.70");
+        LOG_INFO("[WS-CMD] apply_rate_limit - thresholds set to 0.40/0.70");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "global rate limit thresholds set to 0.40/0.70");
     }
     else if (strcmp(cmd, "enable_monitoring") == 0) {
-        LOG_INFO("[WS-CMD] enable_monitoring â€” enhanced monitoring enabled");
+        LOG_INFO("[WS-CMD] enable_monitoring - enhanced monitoring enabled");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "enhanced monitoring enabled");
     }
     else if (strcmp(cmd, "enable_auto_mitigation") == 0) {
-        atomic_store_explicit(&g_auto_mitigation_enabled, 1, memory_order_release);
+        atomic_store_explicit(&g_shared_state->auto_mitigation_enabled, 1, memory_order_release);
         LOG_INFO("[WS-CMD] enable_auto_mitigation");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "auto mitigation enabled");
     }
     else if (strcmp(cmd, "disable_auto_mitigation") == 0) {
-        atomic_store_explicit(&g_auto_mitigation_enabled, 0, memory_order_release);
+        atomic_store_explicit(&g_shared_state->auto_mitigation_enabled, 0, memory_order_release);
         LOG_INFO("[WS-CMD] disable_auto_mitigation");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "auto mitigation disabled");
     }
     else if (strcmp(cmd, "clear_rate_limit") == 0 && has_valid_ip_arg) {
-        atomic_store_explicit(&g_pending_clear_rate_limit_ip, ia.s_addr, memory_order_release);
-        atomic_store_explicit(&g_pending_clear_rate_limit, 1, memory_order_release);
+        atomic_store_explicit(&g_shared_state->pending_clear_rate_limit_ip, ia.s_addr, memory_order_release);
+        atomic_store_explicit(&g_shared_state->pending_clear_rate_limit, 1, memory_order_release);
         LOG_INFO("[WS-CMD] clear_rate_limit %s", arg);
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "queued rate-limit clear for %s", arg);
     }
     else if (strcmp(cmd, "simulate_ddos") == 0 && c->ws) {
         if (ws_sim_commands_enabled()) {
+            atomic_store_explicit(&g_pipeline_sim_mode, 2, memory_order_release);
             ws_activity_t wa;
             wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
-            const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
-            wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80101);  /* 192.168.1.1 */
+            wa.src_ip = pipeline_sim_src_ip_ipv4();
             wa.threat_score = 0.92;
             wa.enforced = 0;
             snprintf(wa.action, sizeof(wa.action), "DETECTED");
             snprintf(wa.attack_type, sizeof(wa.attack_type), "SYN_FLOOD");
             snprintf(wa.reason, sizeof(wa.reason), "[SIMULATED] score=0.920 conf=0.95 ml=0.88 rel=0.90");
             ws_push_activity(c->ws, &wa);
-            LOG_INFO("[WS-CMD] simulate_ddos â€” injected synthetic activity");
+            LOG_INFO("[WS-CMD] simulate_ddos - injected synthetic activity + telemetry overlay (mode=2)");
             ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulated ddos activity injected");
         } else {
             LOG_WARN("[WS-CMD] simulate_ddos rejected: simulation disabled");
@@ -1546,17 +2281,19 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
     }
     else if (strcmp(cmd, "simulate_flash_crowd") == 0 && c->ws) {
         if (ws_sim_commands_enabled()) {
+            atomic_store_explicit(&g_pipeline_sim_mode, 1, memory_order_release);
             ws_activity_t wa;
             wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
-            const char *sim_ip = getenv("SENTINEL_SIM_SRC_IP");
-            wa.src_ip = sim_ip ? inet_addr(sim_ip) : htonl(0xC0A80102);  /* 192.168.1.2 */
+            wa.src_ip = pipeline_sim_src_ip_ipv4();
+            if (wa.src_ip == htonl(0xC0A80101))
+                wa.src_ip = htonl(0xC0A80102); /* distinguish flash crowd default IP */
             wa.threat_score = 0.45;
             wa.enforced = 0;
             snprintf(wa.action, sizeof(wa.action), "MONITOR");
             snprintf(wa.attack_type, sizeof(wa.attack_type), "NONE");
-            snprintf(wa.reason, sizeof(wa.reason), "[SIMULATED] Flash crowd â€” score=0.450 conf=0.70 ml=0.35 rel=0.80");
+            snprintf(wa.reason, sizeof(wa.reason), "[SIMULATED] Flash crowd - score=0.450 conf=0.70 ml=0.35 rel=0.80");
             ws_push_activity(c->ws, &wa);
-            LOG_INFO("[WS-CMD] simulate_flash_crowd â€” injected synthetic activity");
+            LOG_INFO("[WS-CMD] simulate_flash_crowd - injected synthetic activity + telemetry overlay (mode=1)");
             ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulated flash crowd activity injected");
         } else {
             LOG_WARN("[WS-CMD] simulate_flash_crowd rejected: simulation disabled");
@@ -1564,8 +2301,8 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
         }
     }
     else if (strcmp(cmd, "stop_simulation") == 0) {
-        /* Acknowledge so UI can clear simulation state; no backend state to clear. */
-        LOG_INFO("[WS-CMD] stop_simulation â€” acknowledged");
+        atomic_store_explicit(&g_pipeline_sim_mode, 0, memory_order_release);
+        LOG_INFO("[WS-CMD] stop_simulation - simulation cleared");
         ws_emit_command_result(c, cmd, request_id, contract_version, 1, "simulation stopped");
     }
     else if (strcmp(cmd, "set_syn_threshold") == 0 && arg) {
@@ -1646,7 +2383,11 @@ int main(int argc, char **argv)
         }
     }
 
-    const char *ifname = "eth0";
+    if (check_sentinel_trial_expiry() != 0)
+        return EXIT_FAILURE;
+
+    const char *ifname = "auto";
+    char resolved_ifname[IFNAMSIZ] = {0};
     int queue_id = 0;
     uint16_t ws_port = 0;
     char *controller_url = NULL;
@@ -1716,8 +2457,10 @@ int main(int argc, char **argv)
     }
 
     LOG_INFO("Starting Sentinel DDoS Core (AF_XDP mode)");
+    shared_state_init();
     load_integration_flags(&integration_flags);
     load_controller_extension_state(&controller_extension);
+    ifname = resolve_capture_interface(ifname, resolved_ifname, sizeof(resolved_ifname));
     LOG_INFO("Integration profile: %s", integration_flags.profile);
     LOG_INFO("Integration flags: intel=%d model=%d controller=%d signature=%d dataplane=%d",
              integration_flags.intel_feed_enabled,
@@ -1730,6 +2473,16 @@ int main(int argc, char **argv)
                  (unsigned long long)(controller_extension.min_interval_ns / 1000000ULL));
     }
     LOG_INFO("Binding to interface: %s, queue: %d", ifname, queue_id);
+    LOG_INFO(
+        "RSS scaling: this process binds AF_XDP queue %d. For multi-Gbps line-rate, configure NIC RSS/queues "
+        "(e.g. ethtool -L), load XDP redirect for each queue, and run one sentinel_pipeline instance per queue "
+        "with distinct -q and CPU affinity (SENTINEL_CPU_PIN).",
+        queue_id
+    );
+    g_capture_is_l3 = sentinel_iface_is_l3_tunnel(ifname);
+    if (g_capture_is_l3) {
+        LOG_INFO("L3 capture mode (no Ethernet header): parser aligned for TUN/Tailscale-style frames on %s", ifname);
+    }
     if (verbose)
         LOG_INFO("Verbose mode enabled");
 
@@ -1941,7 +2694,9 @@ int main(int argc, char **argv)
     feedback_thread_arg[1] = de;
     feedback_thread_arg[2] = fe;
     feedback_thread_arg[3] = &feedback_shared;
-    if (pthread_create(&feedback_thread, NULL, feedback_worker, feedback_thread_arg) != 0) {
+    if (!integration_flags.intel_feed_enabled) {
+        LOG_INFO("Feedback loop disabled by profile/env; running without RL threshold adjustments.");
+    } else if (pthread_create(&feedback_thread, NULL, feedback_worker, feedback_thread_arg) != 0) {
         LOG_WARN("Feedback thread create failed; running without background adjustments.");
     } else {
         feedback_thread_started = 1;
@@ -2019,6 +2774,20 @@ int main(int argc, char **argv)
 
         /* Telemetry: 1s metrics, traffic_rate, protocol_dist, mitigation_status */
         if (ws && now - last_metrics >= 1) {
+            shared_state_publish_metrics(g_shared_state,
+                                         ifname,
+                                         dataplane_mode,
+                                         rx_packets,
+                                         rx_packets - last_rx_for_metrics,
+                                         period_bytes_total,
+                                         fe_active_flows(fe),
+                                         fe_active_sources(fe),
+                                         atomic_load_explicit(&total_blocked, memory_order_acquire),
+                                         atomic_load_explicit(&total_rate_limited, memory_order_acquire),
+                                         total_monitored,
+                                         classifications_this_sec,
+                                         skipped_classifications_this_sec);
+
             ws_metrics_t wm;
             wm.packets_per_sec = rx_packets - last_rx_for_metrics;
             wm.bytes_per_sec = period_bytes_total;
@@ -2029,7 +2798,6 @@ int main(int argc, char **argv)
             wm.memory_usage_mb = read_mem_usage();
             wm.kernel_drops = atomic_load_explicit(&total_blocked, memory_order_acquire);
             wm.userspace_drops = atomic_load_explicit(&total_rate_limited, memory_order_acquire);
-            ws_update_metrics(ws, &wm);
 
             if (skipped_classifications_this_sec > 0) {
                 LOG_WARN("Classification backpressure active: skipped %u extracts in last second (cap=%lu/s)",
@@ -2044,7 +2812,6 @@ int main(int argc, char **argv)
             tr.udp_pps = period_udp_pkts;
             tr.icmp_pps = period_icmp_pkts;
             tr.other_pps = period_other_pkts;
-            ws_update_traffic_rate(ws, &tr);
 
             uint64_t total_p = tr.total_pps;
             ws_protocol_dist_t pd;
@@ -2060,6 +2827,15 @@ int main(int argc, char **argv)
             } else {
                 pd.tcp_percent = pd.udp_percent = pd.icmp_percent = pd.other_percent = 0.0;
             }
+
+            {
+                int sim_mode = atomic_load_explicit(&g_pipeline_sim_mode, memory_order_acquire);
+                if (sim_mode != 0 && ws_sim_commands_enabled()) {
+                    pipeline_apply_sim_traffic_overlay(sim_mode, &wm, &tr, &pd);
+                }
+            }
+            ws_update_metrics(ws, &wm);
+            ws_update_traffic_rate(ws, &tr);
             ws_update_protocol_dist(ws, &pd);
 
             /* Active connections telemetry from top active flows. */
@@ -2094,18 +2870,18 @@ int main(int argc, char **argv)
             ms.total_whitelisted = n_whitelist_static;
             ms.kernel_verdict_cache_hits = 0;
             ms.kernel_verdict_cache_misses = 0;
-            ms.auto_mitigation_enabled = atomic_load_explicit(&g_auto_mitigation_enabled, memory_order_acquire);
+            ms.auto_mitigation_enabled = atomic_load_explicit(&g_shared_state->auto_mitigation_enabled, memory_order_acquire);
             ms.kernel_dropping_enabled = (blacklist_map_fd > 0) ? 1 : 0;
             snprintf(ms.dataplane_mode, sizeof(ms.dataplane_mode), "%s", pipeline_dataplane_mode_str(dataplane_mode));
             
             /* Periodic SDN health check (every 5s) to catch early connectivity status */
             if (now - last_sdn_health_check >= sdn_health_check_interval) {
                 int health = sdn_health_check(sdn);
-                atomic_store_explicit(&g_sdn_connected, (health == 0) ? 1 : 0, memory_order_release);
+                atomic_store_explicit(&g_shared_state->sdn_connected, (health == 0) ? 1 : 0, memory_order_release);
                 last_sdn_health_check = now;
             }
             
-            ms.sdn_connected = atomic_load_explicit(&g_sdn_connected, memory_order_acquire);
+            ms.sdn_connected = atomic_load_explicit(&g_shared_state->sdn_connected, memory_order_acquire);
             sdn_get_last_error(sdn, ms.sdn_last_error, sizeof(ms.sdn_last_error));
             ws_update_mitigation_status(ws, &ms);
 
@@ -2120,8 +2896,8 @@ int main(int argc, char **argv)
             ws_update_integration_status(ws, &ist);
 
             /* Process pending clear_rate_limit from WebSocket command */
-            if (atomic_exchange_explicit(&g_pending_clear_rate_limit, 0, memory_order_acquire)) {
-                uint32_t ip = atomic_load_explicit(&g_pending_clear_rate_limit_ip, memory_order_relaxed);
+            if (atomic_exchange_explicit(&g_shared_state->pending_clear_rate_limit, 0, memory_order_acquire)) {
+                uint32_t ip = atomic_load_explicit(&g_shared_state->pending_clear_rate_limit_ip, memory_order_relaxed);
                 sdn_remove_rules_for_src(sdn, ip);
                 if (g_cleared_rate_limit_count < CLEARED_RATE_LIMIT_MAX) {
                     g_cleared_rate_limits[g_cleared_rate_limit_count++] = ip;
@@ -2129,14 +2905,14 @@ int main(int argc, char **argv)
             }
 
             /* Process pending unblock_ip: remove from eBPF blacklist map */
-            if (atomic_exchange_explicit(&g_has_pending_unblock_ip, 0, memory_order_acquire)) {
-                uint32_t ip = atomic_load_explicit(&g_pending_unblock_ip, memory_order_relaxed);
+            if (atomic_exchange_explicit(&g_shared_state->has_pending_unblock_ip, 0, memory_order_acquire)) {
+                uint32_t ip = atomic_load_explicit(&g_shared_state->pending_unblock_ip, memory_order_relaxed);
                 pipeline_unblacklist_ip(blacklist_map_fd, ip);
                 LOG_INFO("[PIPELINE] unblock_ip: removed from kernel blacklist");
             }
 
             /* Process pending block_all_flagged: move monitored IPs to blocklist */
-            if (atomic_exchange_explicit(&g_pending_block_all, 0, memory_order_acquire)) {
+            if (atomic_exchange_explicit(&g_shared_state->pending_block_all, 0, memory_order_acquire)) {
                 uint32_t n_mon = (total_monitored < TELEM_IP_MAX) ? total_monitored : TELEM_IP_MAX;
                 uint32_t mon_start = (total_monitored >= TELEM_IP_MAX) ? monitored_head : 0;
                 uint64_t ts = (uint64_t)now * 1000000000ULL;
@@ -2159,7 +2935,7 @@ int main(int argc, char **argv)
             }
 
             /* Process pending clear_all_blocks: flush eBPF map, clear denylist, reset counters */
-            if (atomic_exchange_explicit(&g_pending_clear_all, 0, memory_order_acquire)) {
+            if (atomic_exchange_explicit(&g_shared_state->pending_clear_all, 0, memory_order_acquire)) {
                 uint32_t total_blocked_snapshot = atomic_load_explicit(&total_blocked, memory_order_acquire);
                 uint32_t total_rate_limited_snapshot = atomic_load_explicit(&total_rate_limited, memory_order_acquire);
                 uint32_t n_blocked = (total_blocked_snapshot < TELEM_IP_MAX) ? total_blocked_snapshot : TELEM_IP_MAX;
@@ -2255,47 +3031,101 @@ int main(int argc, char **argv)
             period_bytes_total = 0;
         }
 
-        /* Telemetry: 5s â€“ top_sources with real-time ML classification */
+        if (!ws && now - last_metrics >= 1) {
+            shared_state_publish_metrics(g_shared_state,
+                                         ifname,
+                                         dataplane_mode,
+                                         rx_packets,
+                                         rx_packets - last_rx_for_metrics,
+                                         period_bytes_total,
+                                         fe_active_flows(fe),
+                                         fe_active_sources(fe),
+                                         atomic_load_explicit(&total_blocked, memory_order_acquire),
+                                         atomic_load_explicit(&total_rate_limited, memory_order_acquire),
+                                         total_monitored,
+                                         classifications_this_sec,
+                                         skipped_classifications_this_sec);
+
+            if (skipped_classifications_this_sec > 0) {
+                LOG_WARN("Classification backpressure active: skipped %u extracts in last second (cap=%lu/s)",
+                         skipped_classifications_this_sec,
+                         max_classifications_per_sec);
+            }
+
+            last_rx_for_metrics = rx_packets;
+            last_metrics = now;
+            classifications_this_sec = 0;
+            skipped_classifications_this_sec = 0;
+            period_tcp_pkts = period_udp_pkts = period_icmp_pkts = period_other_pkts = 0;
+            period_tcp_bytes = period_udp_bytes = period_icmp_bytes = period_other_bytes = 0;
+            period_bytes_total = 0;
+        }
+
+        /* Telemetry: 5s - top_sources with real-time ML classification */
         if (ws && now - last_top_sources >= 5) {
-            fe_top_source_t top[10];
-            uint32_t n = fe_get_top_sources(fe, top, 10);
-            if (n > 0) {
-                ws_top_source_t ws_top[10];
-                sentinel_feature_vector_t fv;
-                sentinel_threat_assessment_t assessment;
-                uint64_t total_top_packets = 0;
-                for (uint32_t k = 0; k < n; k++)
-                    total_top_packets += top[k].packets;
-                uint32_t out = 0;
-                for (uint32_t k = 0; k < n && out < 10; k++) {
-                    if (g_contributor_threshold_pct > 0.0 && total_top_packets > 0) {
-                        double pct = (double)top[k].packets * 100.0 / (double)total_top_packets;
-                        if (pct < g_contributor_threshold_pct)
-                            continue;
-                    }
-                    ws_top[out].src_ip = top[k].src_ip;
-                    ws_top[out].packets = top[k].packets;
-                    ws_top[out].bytes = top[k].bytes;
-                    ws_top[out].flow_count = top[k].flow_count;
-                    ws_top[out].suspicious = 0;
-                    ws_top[out].threat_score = 0.0;
-                    if (fe_extract_source(fe, top[k].src_ip, &fv) == 0 &&
-                        de_classify(de, &fv, &assessment, integration_flags.model_extension_enabled) == 0) {
-                        ws_top[out].threat_score = assessment.threat_score;
-                        ws_top[out].suspicious = (assessment.verdict != VERDICT_ALLOW) ? 1 : 0;
-                    }
-                    out++;
+            int sim_mode_ts = atomic_load_explicit(&g_pipeline_sim_mode, memory_order_acquire);
+            if (sim_mode_ts != 0 && ws_sim_commands_enabled()) {
+                ws_top_source_t ws_top[1];
+                memset(&ws_top, 0, sizeof(ws_top));
+                ws_top[0].src_ip = pipeline_sim_src_ip_ipv4();
+                if (sim_mode_ts == 1 && ws_top[0].src_ip == htonl(0xC0A80101))
+                    ws_top[0].src_ip = htonl(0xC0A80102);
+                if (sim_mode_ts == 2) {
+                    ws_top[0].packets = 5000000ULL;
+                    ws_top[0].bytes = 3200000000ULL;
+                    ws_top[0].flow_count = 12000U;
+                    ws_top[0].suspicious = 1;
+                    ws_top[0].threat_score = 0.92;
+                } else {
+                    ws_top[0].packets = 800000ULL;
+                    ws_top[0].bytes = 400000000ULL;
+                    ws_top[0].flow_count = 9000U;
+                    ws_top[0].suspicious = 0;
+                    ws_top[0].threat_score = 0.45;
                 }
-                ws_update_top_sources(ws, ws_top, out);
+                ws_update_top_sources(ws, ws_top, 1);
+            } else {
+                fe_top_source_t top[10];
+                uint32_t n = fe_get_top_sources(fe, top, 10);
+                if (n > 0) {
+                    ws_top_source_t ws_top[10];
+                    sentinel_feature_vector_t fv;
+                    sentinel_threat_assessment_t assessment;
+                    uint64_t total_top_packets = 0;
+                    for (uint32_t k = 0; k < n; k++)
+                        total_top_packets += top[k].packets;
+                    uint32_t out = 0;
+                    for (uint32_t k = 0; k < n && out < 10; k++) {
+                        if (g_contributor_threshold_pct > 0.0 && total_top_packets > 0) {
+                            double pct = (double)top[k].packets * 100.0 / (double)total_top_packets;
+                            if (pct < g_contributor_threshold_pct)
+                                continue;
+                        }
+                        ws_top[out].src_ip = top[k].src_ip;
+                        ws_top[out].packets = top[k].packets;
+                        ws_top[out].bytes = top[k].bytes;
+                        ws_top[out].flow_count = top[k].flow_count;
+                        ws_top[out].suspicious = 0;
+                        ws_top[out].threat_score = 0.0;
+                        if (fe_extract_source(fe, top[k].src_ip, &fv) == 0 &&
+                            de_classify(de, &fv, &assessment, integration_flags.model_extension_enabled) == 0) {
+                            ws_top[out].threat_score = assessment.threat_score;
+                            ws_top[out].suspicious = (assessment.verdict != VERDICT_ALLOW) ? 1 : 0;
+                        }
+                        out++;
+                    }
+                    ws_update_top_sources(ws, ws_top, out);
+                }
             }
             last_top_sources = now;
         }
 
-        /* Telemetry: 10s â€“ feature_importance (from de_get_thresholds) */
+        /* Telemetry: 10s - feature_importance (from de_get_thresholds) */
         if (ws && now - last_feature_importance >= 10) {
             const de_thresholds_t *dt = de_get_thresholds(de);
             if (dt) {
                 ws_feature_importance_t wi;
+                int sim_mode_fi = atomic_load_explicit(&g_pipeline_sim_mode, memory_order_acquire);
                 fb_policy_stats_t ps;
                 memset(&ps, 0, sizeof(ps));
                 (void)fb_get_policy_stats(fb, &ps);
@@ -2348,12 +3178,69 @@ int main(int argc, char **argv)
                 wi.policy_arm = ps.active_arm;
                 wi.policy_updates = ps.update_count;
                 wi.policy_last_reward = ps.last_reward;
+                if (sim_mode_fi != 0 && ws_sim_commands_enabled()) {
+                    pipeline_apply_sim_feature_overlay(sim_mode_fi, &wi);
+                }
                 ws_update_feature_importance(ws, &wi);
             }
-            if (ws && g_has_last_feature_vector) {
-                ws_raw_feature_vector_t raw_vec;
-                fv_to_raw_vector(&g_last_feature_vector, g_last_chi_square_score, &raw_vec);
-                ws_update_feature_vector(ws, &raw_vec);
+            if (ws) {
+                int sim_mode_fv = atomic_load_explicit(&g_pipeline_sim_mode, memory_order_acquire);
+                if (sim_mode_fv != 0 && ws_sim_commands_enabled()) {
+                    ws_raw_feature_vector_t raw_vec;
+                    memset(&raw_vec, 0, sizeof(raw_vec));
+                    if (sim_mode_fv == 2) {
+                        raw_vec.values[0] = 800000.0;
+                        raw_vec.values[1] = 4e8;
+                        raw_vec.values[2] = 0.95;
+                        raw_vec.values[3] = 0.02;
+                        raw_vec.values[4] = 6.5;
+                        raw_vec.values[5] = 5.8;
+                        raw_vec.values[6] = 120.0;
+                        raw_vec.values[7] = 180.0;
+                        raw_vec.values[8] = 45.0;
+                        raw_vec.values[9] = 2.0;
+                        raw_vec.values[10] = 0.01;
+                        raw_vec.values[11] = 4.2;
+                        raw_vec.values[12] = 80.0;
+                        raw_vec.values[13] = 52.0;
+                        raw_vec.values[14] = 8.0;
+                        raw_vec.values[15] = 150.0;
+                        raw_vec.values[16] = 90.0;
+                        raw_vec.values[17] = 5000.0;
+                        raw_vec.values[18] = 750000.0;
+                        raw_vec.values[19] = 5.0;
+                        raw_vec.values[20] = 0.85;
+                        raw_vec.values[21] = 150.0;
+                    } else {
+                        raw_vec.values[0] = 95000.0;
+                        raw_vec.values[1] = 8e7;
+                        raw_vec.values[2] = 0.35;
+                        raw_vec.values[3] = 0.08;
+                        raw_vec.values[4] = 5.2;
+                        raw_vec.values[5] = 4.1;
+                        raw_vec.values[6] = 400.0;
+                        raw_vec.values[7] = 512.0;
+                        raw_vec.values[8] = 120.0;
+                        raw_vec.values[9] = 0.0;
+                        raw_vec.values[10] = 0.12;
+                        raw_vec.values[11] = 5.5;
+                        raw_vec.values[12] = 2000.0;
+                        raw_vec.values[13] = 64.0;
+                        raw_vec.values[14] = 4.0;
+                        raw_vec.values[15] = 800.0;
+                        raw_vec.values[16] = 400.0;
+                        raw_vec.values[17] = 8000.0;
+                        raw_vec.values[18] = 95000.0;
+                        raw_vec.values[19] = 12.0;
+                        raw_vec.values[20] = 0.32;
+                        raw_vec.values[21] = 40.0;
+                    }
+                    ws_update_feature_vector(ws, &raw_vec);
+                } else if (g_has_last_feature_vector) {
+                    ws_raw_feature_vector_t raw_vec;
+                    fv_to_raw_vector(&g_last_feature_vector, g_last_chi_square_score, &raw_vec);
+                    ws_update_feature_vector(ws, &raw_vec);
+                }
             }
             detections_10s = 0;
             threat_sum_10s = 0.0;
@@ -2372,7 +3259,8 @@ int main(int argc, char **argv)
         }
 
         /* 60s: producer writes only when consumer has consumed (work_ready==0); no torn read. */
-        if (now - last_feedback >= 60 &&
+        if (integration_flags.intel_feed_enabled &&
+            now - last_feedback >= 60 &&
             atomic_load_explicit(&feedback_shared.work_ready, memory_order_acquire) == 0) {
             fe_top_source_t top[FEEDBACK_SLOTS];
             uint32_t n = fe_get_top_sources(fe, top, FEEDBACK_SLOTS);
@@ -2469,13 +3357,13 @@ int main(int argc, char **argv)
                     threat_count_10s++;
                     if (assessment.verdict != VERDICT_ALLOW) {
                         detections_10s++;
-                        int enforcing = atomic_load_explicit(&g_auto_mitigation_enabled, memory_order_acquire);
+                        int enforcing = atomic_load_explicit(&g_shared_state->auto_mitigation_enabled, memory_order_acquire);
                         sentinel_sdn_rule_t rule;
                         int sdn_push_rc = -1;
                         sdn_build_rule_from_assessment(sdn, &assessment, &rule);
                         if (enforcing) {
                             sdn_push_rc = sdn_push_rule(sdn, &rule);
-                            atomic_store_explicit(&g_sdn_connected, (sdn_push_rc == 0) ? 1 : 0, memory_order_release);
+                            atomic_store_explicit(&g_shared_state->sdn_connected, (sdn_push_rc == 0) ? 1 : 0, memory_order_release);
                         }
                         maybe_run_controller_extension(&controller_extension, &assessment, &rule,
                                                        enforcing, sdn_push_rc, coarse_now_ns);
@@ -2616,13 +3504,13 @@ int main(int argc, char **argv)
                         threat_count_10s++;
                         if (assessment.verdict != VERDICT_ALLOW) {
                             detections_10s++;
-                            int enforcing = atomic_load_explicit(&g_auto_mitigation_enabled, memory_order_acquire);
+                            int enforcing = atomic_load_explicit(&g_shared_state->auto_mitigation_enabled, memory_order_acquire);
                             sentinel_sdn_rule_t rule;
                             int sdn_push_rc = -1;
                             sdn_build_rule_from_assessment(sdn, &assessment, &rule);
                             if (enforcing) {
                                 sdn_push_rc = sdn_push_rule(sdn, &rule);
-                                atomic_store_explicit(&g_sdn_connected, (sdn_push_rc == 0) ? 1 : 0, memory_order_release);
+                                    atomic_store_explicit(&g_shared_state->sdn_connected, (sdn_push_rc == 0) ? 1 : 0, memory_order_release);
                             }
                             maybe_run_controller_extension(&controller_extension, &assessment, &rule,
                                                            enforcing, sdn_push_rc, coarse_now_ns);
@@ -2734,6 +3622,8 @@ int main(int argc, char **argv)
     if (xsk->xsk_fd >= 0)
         close(xsk->xsk_fd);
     free(xsk);
+
+    shared_state_destroy();
 
     return 0;
 }

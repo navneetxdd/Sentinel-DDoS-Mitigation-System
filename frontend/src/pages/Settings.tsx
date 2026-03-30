@@ -8,6 +8,7 @@ import { IPListManager } from "@/components/settings/IPListManager";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
+import { clearVolatileSecretSettings, setVolatileSecretSettings } from "@/lib/settingsStorage";
 import {
   Settings as SettingsIcon,
   Gauge,
@@ -69,9 +70,16 @@ const loadStoredSettings = (): SettingsState => {
       return DEFAULT_SETTINGS;
     }
     const parsed = JSON.parse(raw) as Partial<SettingsState>;
+    if ("alertWebhookSecret" in parsed || "geminiApiKey" in parsed) {
+      delete parsed.alertWebhookSecret;
+      delete parsed.geminiApiKey;
+      window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(parsed));
+    }
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      alertWebhookSecret: "",
+      geminiApiKey: "",
       whitelist: Array.isArray(parsed.whitelist) ? parsed.whitelist : DEFAULT_SETTINGS.whitelist,
       blacklist: Array.isArray(parsed.blacklist) ? parsed.blacklist : DEFAULT_SETTINGS.blacklist,
     };
@@ -82,7 +90,12 @@ const loadStoredSettings = (): SettingsState => {
 
 const saveStoredSettings = (settings: SettingsState) => {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  const persisted: SettingsState = {
+    ...settings,
+    alertWebhookSecret: "",
+    geminiApiKey: "",
+  };
+  window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(persisted));
 };
 
 const Settings = () => {
@@ -112,9 +125,11 @@ const Settings = () => {
 
   const modelOptions = useMemo(
     () => [
-      { value: "random_forest", label: "Random Forest (Default)" },
+      { value: "random_forest", label: "Random Forest" },
       { value: "xgboost", label: "XGBoost" },
-      { value: "gradient_boosting", label: "Gradient Boosting" },
+      { value: "decision_tree", label: "Decision Tree" },
+      { value: "knn", label: "KNN" },
+      { value: "isolation_forest", label: "Isolation Forest" },
     ],
     []
   );
@@ -158,6 +173,10 @@ const Settings = () => {
   };
 
   const handleSave = () => {
+    setVolatileSecretSettings({
+      alertWebhookSecret,
+      geminiApiKey,
+    });
     saveStoredSettings(currentSettings);
 
     if (ws.connected && ws.sendCommand) {
@@ -177,12 +196,13 @@ const Settings = () => {
     toast({
       title: "Settings Saved",
       description: ws.connected
-        ? "Settings saved locally and synced to the backend."
-        : "Settings saved locally. Connect to backend to sync runtime thresholds.",
+        ? "Non-secret settings were saved locally, secrets stay in memory, and thresholds were synced to the backend."
+        : "Non-secret settings were saved locally. Secrets stay in memory until refresh.",
     });
   };
 
   const handleReset = () => {
+    clearVolatileSecretSettings();
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
     }
@@ -191,7 +211,7 @@ const Settings = () => {
     });
     toast({
       title: "Settings Reset",
-      description: "Local settings were restored to defaults.",
+      description: "Local settings were restored to defaults and in-memory secrets were cleared.",
       variant: "destructive",
     });
   };
@@ -244,7 +264,7 @@ const Settings = () => {
           className="mb-6"
         >
           <p className="text-xs text-muted-foreground mb-4">
-            Log retention, analysis interval, and model version are stored locally; the pipeline uses its own intervals. Model version affects which benchmark is shown in the UI.
+            Log retention, analysis interval, and benchmark focus are stored locally; the pipeline uses its own intervals. Runtime model deployment is still selected automatically by the training benchmark.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="space-y-4">
@@ -278,8 +298,8 @@ const Settings = () => {
             </div>
             <div className="space-y-4">
               <SelectSetting
-                label="Model Version"
-                description="Benchmark focus in the UI; deployed runtime model is selected automatically from benchmark accuracy and latency constraints."
+                label="Benchmark Focus"
+                description="Local UI preference only. Actual runtime deployment is selected automatically from measured benchmark accuracy and latency constraints."
                 value={modelFocus}
                 onValueChange={setModelFocus}
                 options={modelOptions}
@@ -300,7 +320,7 @@ const Settings = () => {
               </a>
             </div>
             <p className="text-xs text-muted-foreground">
-              Stored locally in your browser only. Sent only to local Explain API when Gemini analysis is requested.
+              Kept in memory only for this browser session. Sent only to the local Explain API when Gemini analysis is requested.
             </p>
             <div className="max-w-2xl space-y-2">
               <label className="text-xs text-muted-foreground">API Key</label>
@@ -382,7 +402,7 @@ const Settings = () => {
             <div className="mt-4 pt-4 border-t border-border/60 space-y-3">
               <p className="text-sm font-medium">Mitigation Alert Webhook</p>
               <p className="text-xs text-muted-foreground">
-                Mitigation Control sends block/mitigation events to this URL when configured.
+                Mitigation Control sends block/mitigation events to this URL when configured. The optional secret is kept in memory only until refresh.
               </p>
               <div className="space-y-2">
                 <label className="text-xs text-muted-foreground">Webhook URL</label>

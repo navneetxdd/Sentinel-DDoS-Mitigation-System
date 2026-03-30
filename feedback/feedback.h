@@ -41,7 +41,7 @@ typedef struct fb_config {
 
 #define FB_CONFIG_DEFAULT { \
     .history_size          = 65536, \
-    .evaluation_window_sec = 300,   \
+    .evaluation_window_sec = 30,     \
     .fp_threshold          = 0.05,  \
     .fn_threshold          = 0.02,  \
     .adjustment_step       = 0.02   \

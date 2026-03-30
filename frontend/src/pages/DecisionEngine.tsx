@@ -8,15 +8,28 @@ import { ModelBenchmarkPanel } from "@/components/dashboard/ModelBenchmarkPanel"
 import { SimulationToggle } from "@/components/dashboard/SimulationToggle";
 import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
+import { usePrimaryAttackerSourceIp } from "@/hooks/usePrimaryAttackerSourceIp";
 import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Brain, Cpu, Database, Network, Layers, Shield, Zap, Gauge } from "lucide-react";
 
 const DecisionEngine = () => {
   const ws = useSentinelWebSocket();
+  const primaryAttackerIp = usePrimaryAttackerSourceIp(ws.topSources, ws.activityLog);
   const benchmarks = useModelBenchmarkReport();
   const [simulatingFlashCrowd, setSimulatingFlashCrowd] = useState(false);
   const [simulatingDDoS, setSimulatingDDoS] = useState(false);
+
+  useEffect(() => {
+    const r = ws.lastCommandResult;
+    if (!r) return;
+    if (r.command === "simulate_ddos") setSimulatingDDoS(!!r.success);
+    if (r.command === "simulate_flash_crowd") setSimulatingFlashCrowd(!!r.success);
+    if (r.command === "stop_simulation" && r.success) {
+      setSimulatingDDoS(false);
+      setSimulatingFlashCrowd(false);
+    }
+  }, [ws.lastCommandResult]);
 
   /* Derive classification from real feature_importance stream */
   const fi = ws.featureImportance;
@@ -59,7 +72,7 @@ const DecisionEngine = () => {
 
   const aiTelemetry = {
     timestamp: new Date().toISOString(),
-    sourceIp: ws.topSources?.[0]?.ip ?? "Unknown",
+    sourceIp: primaryAttackerIp,
     packetsPerSecond: pps,
     bytesPerSecond: ws.metrics?.bytes_per_sec ?? 0,
     threatScore: threatScore,
@@ -74,7 +87,9 @@ const DecisionEngine = () => {
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-2 flex items-center gap-2">
             <Zap className="w-4 h-4 text-amber-500" />
             <span className="text-sm font-medium text-amber-700 dark:text-amber-400">Simulation active</span>
-            <span className="text-xs text-muted-foreground">Toggle off above to stop simulated activity.</span>
+            <span className="text-xs text-muted-foreground">
+              Telemetry overlay only (no eBPF/XDP drops). Toggle off to stop, or if commands fail ensure SENTINEL_ALLOW_SIM_COMMANDS=1 on the pipeline.
+            </span>
           </div>
         )}
         <PageHeader
@@ -86,12 +101,14 @@ const DecisionEngine = () => {
               isFlashCrowd={simulatingFlashCrowd}
               isDDoS={simulatingDDoS}
               onFlashCrowdToggle={() => {
-                setSimulatingFlashCrowd((prev) => !prev);
-                ws.sendCommand(simulatingFlashCrowd ? "stop_simulation" : "simulate_flash_crowd");
+                const next = !simulatingFlashCrowd;
+                setSimulatingFlashCrowd(next);
+                ws.sendCommand(next ? "simulate_flash_crowd" : "stop_simulation");
               }}
               onDDoSToggle={() => {
-                setSimulatingDDoS((prev) => !prev);
-                ws.sendCommand(simulatingDDoS ? "stop_simulation" : "simulate_ddos");
+                const next = !simulatingDDoS;
+                setSimulatingDDoS(next);
+                ws.sendCommand(next ? "simulate_ddos" : "stop_simulation");
               }}
             />
           }

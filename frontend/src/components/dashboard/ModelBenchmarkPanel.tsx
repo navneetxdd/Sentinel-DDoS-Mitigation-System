@@ -68,6 +68,7 @@ export function ModelBenchmarkPanel({
               const topFeature = model.top_features[0];
               const hasTopFeatures = model.top_features && model.top_features.length > 0;
               const isIsolationForest = model.name === "isolation_forest";
+              const isRuntime = model.name === report.runtime_model;
               const remainder = report.models.length % 3;
               const fillTailTwoCols = remainder === 2 && index === report.models.length - 2;
               const fillTailThreeCols = remainder === 1 && index === report.models.length - 1;
@@ -76,20 +77,30 @@ export function ModelBenchmarkPanel({
                   key={model.name}
                   className={cn(
                     "rounded-md border p-4 bg-secondary/30",
-                    model.exported ? "border-primary/30" : "border-border",
+                    isRuntime ? "border-primary/50" : model.exported ? "border-primary/30" : "border-border",
                     fillTailTwoCols && "md:col-span-2",
                     fillTailThreeCols && "md:col-span-3"
                   )}
                 >
                   <div className="flex items-center justify-between gap-3 mb-3">
                     <div className="flex items-center gap-2">
-                      <BrainCircuit className={cn("w-4 h-4", model.exported ? "text-primary" : "text-muted-foreground")} />
+                      <BrainCircuit className={cn("w-4 h-4", (isRuntime || model.exported) ? "text-primary" : "text-muted-foreground")} />
                       <h4 className="font-semibold text-sm">{model.display_name}</h4>
                     </div>
-                    {model.exported && (
+                    {isRuntime ? (
                       <div className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
                         <ShieldCheck className="w-3 h-3" />
-                        Deployed
+                        Runtime
+                      </div>
+                    ) : model.exported ? (
+                      <div className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary/50 px-2 py-0.5 text-[10px] font-medium text-foreground/80">
+                        <ShieldCheck className="w-3 h-3" />
+                        Exportable
+                      </div>
+                    ) : null}
+                    {!isRuntime && !model.exported && (
+                      <div className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                        Benchmarked
                       </div>
                     )}
                   </div>

@@ -23,7 +23,11 @@ if /I "%ACTION%"=="full" (
 	set ACTION=start
 	set PROFILE=full
 )
-if "%PROFILE%"=="" set PROFILE=baseline
+if /I "%ACTION%"=="production" (
+	set ACTION=start
+	set PROFILE=production
+)
+if "%PROFILE%"=="" set PROFILE=production
 
 set DASH_ARG=
 if /I "%DASH%"=="open" set DASH_ARG=-OpenDashboard

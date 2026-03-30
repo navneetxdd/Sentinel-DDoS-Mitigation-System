@@ -349,19 +349,23 @@ static int ws_handshake(ws_context_t *ctx, int fd, const char *request)
     base64_encode(hash, 20, accept);
     
     /* Send HTTP 101 Switching Protocols.
-     * RFC 6455 §4.2.2: If the client sent Sec-WebSocket-Protocol the server
+     * RFC 6455 §4.2.2: If the client sent Sec-WebSocket-Protocol, the server
      * MUST echo back one of the requested tokens, otherwise the browser will
-     * immediately fail the connection.  We echo the validated API key. */
+     * immediately fail the connection. We echo the first requested protocol
+     * (which is the API key in the Sentinel frontend). */
+    char protocol_value[256];
+    int has_protocol = (ws_get_header_value(request, "Sec-WebSocket-Protocol", protocol_value, sizeof(protocol_value)) == 0);
+
     char response[1024];
     int n;
-    if (ctx->cfg.api_key[0] != '\0') {
+    if (has_protocol) {
         n = snprintf(response, sizeof(response),
             "HTTP/1.1 101 Switching Protocols\r\n"
             "Upgrade: websocket\r\n"
             "Connection: Upgrade\r\n"
             "Sec-WebSocket-Accept: %s\r\n"
             "Sec-WebSocket-Protocol: %s\r\n"
-            "\r\n", accept, ctx->cfg.api_key);
+            "\r\n", accept, protocol_value);
     } else {
         n = snprintf(response, sizeof(response),
             "HTTP/1.1 101 Switching Protocols\r\n"

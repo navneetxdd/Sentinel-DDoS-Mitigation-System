@@ -21,6 +21,7 @@ To generate 'sentinel_model.joblib' for the Explain API:
 
 from __future__ import annotations
 
+import argparse
 import csv
 import glob
 import importlib
@@ -35,6 +36,9 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+if os.name == "nt":
+    os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(max(1, os.cpu_count() or 1)))
 
 try:
     import numpy as np
@@ -413,9 +417,38 @@ def capture_label_example(raw_value: object) -> str:
     return str(raw_value).strip()[:80]
 
 
+def detect_sentinel_json_payload_type(path: str) -> Optional[str]:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+    rows = payload.get("samples", []) if isinstance(payload, dict) else payload
+    if not isinstance(rows, list) or not rows:
+        return None
+
+    sample = next((row for row in rows if isinstance(row, dict)), None)
+    if sample is None:
+        return None
+
+    keys = {normalize_name(key) for key in sample.keys()}
+    # Require strict matching of the core feature set for JSON datasets
+    required_keys = DATASET_SIGNATURES["sentinel_features"]
+    if required_keys.issubset(keys):
+        return "sentinel_json"
+    
+    # Fallback for older sentinel JSON formats if they have enough mapped features
+    label_keys = {"label", "attack", "class", "target"}
+    if (label_keys & keys) and len(keys & required_keys) >= (NUM_FEATURES // 2):
+        return "sentinel_json"
+
+    return None
+
+
 def detect_dataset_type(path: str) -> Optional[str]:
     if path.lower().endswith(".json"):
-        return "sentinel_json"
+        return detect_sentinel_json_payload_type(path)
     if path.lower().endswith(".parquet"):
         headers = parquet_headers(path)
     else:
@@ -1176,7 +1209,10 @@ def chunk_summary(chunk: DatasetChunk) -> str:
     )
 
 
-def determine_data_dirs() -> List[str]:
+def determine_data_dirs(
+    explicit_data_dirs: Optional[Sequence[str]] = None,
+    auto_repo_data: Optional[bool] = None,
+) -> List[str]:
     repo_root = os.path.dirname(__file__)
 
     def normalize_dirs(paths: Sequence[str]) -> List[str]:
@@ -1217,19 +1253,19 @@ def determine_data_dirs() -> List[str]:
                 discovered.append(candidate)
         return discovered
 
-    env_value = os.environ.get("SENTINEL_DATA_DIRS", "").strip()
-    if env_value:
-        explicit = [path for path in env_value.split(os.pathsep) if path]
-        if os.environ.get("SENTINEL_AUTO_REPO_DATA", "1") == "1":
-            explicit.extend(AUTO_DATA_DIR_CANDIDATES)
-            explicit.extend(discover_data_dirs())
-        return normalize_dirs(explicit)
+    if auto_repo_data is None:
+        auto_repo_data = os.environ.get("SENTINEL_AUTO_REPO_DATA", "0") == "1"
 
-    default_dirs = ["data"]
-    if os.environ.get("SENTINEL_AUTO_REPO_DATA", "1") == "1":
-        default_dirs.extend(AUTO_DATA_DIR_CANDIDATES)
-        default_dirs.extend(discover_data_dirs())
-    return normalize_dirs(default_dirs)
+    if explicit_data_dirs is not None:
+        directories = list(explicit_data_dirs)
+    else:
+        env_value = os.environ.get("SENTINEL_DATA_DIRS", "").strip()
+        directories = [path for path in env_value.split(os.pathsep) if path] if env_value else list(AUTO_DATA_DIR_CANDIDATES)
+
+    if auto_repo_data:
+        directories.extend(discover_data_dirs())
+
+    return normalize_dirs(directories)
 
 
 def determine_required_dataset_types() -> Tuple[str, ...]:
@@ -2020,7 +2056,12 @@ def candidate_grid(lite_mode: bool) -> List[Dict[str, object]]:
 
 
 def determine_rf_n_jobs() -> int:
-    return int(os.environ.get("SENTINEL_RF_N_JOBS", "-1"))
+    configured = os.environ.get("SENTINEL_RF_N_JOBS")
+    if configured is not None:
+        return int(configured)
+    if os.name == "nt":
+        return 1
+    return -1
 
 
 def choose_model(
@@ -3331,23 +3372,24 @@ def choose_runtime_model(results: Dict[str, ModelBenchmarkResult]) -> str:
             key=lambda item: (
                 math.isnan(float(item[1].inference_ms_per_sample)),
                 float(item[1].inference_ms_per_sample),
-                -float(item[1].test_metrics["accuracy"]),
-            ),
+                -float(item[1].selection_val_metrics["accuracy"]),
+                -float(item[1].selection_val_metrics["macro_f1"]),
+                ),
         )[0]
         return fastest[0]
 
-    best_accuracy = max(float(result.test_metrics["accuracy"]) for _, result in pool)
+    best_accuracy = max(float(result.selection_val_metrics["accuracy"]) for _, result in pool)
     near_best = [
         (name, result)
         for name, result in pool
-        if (best_accuracy - float(result.test_metrics["accuracy"])) <= accuracy_tie_epsilon
+        if (best_accuracy - float(result.selection_val_metrics["accuracy"])) <= accuracy_tie_epsilon
     ]
     selected = sorted(
         near_best,
         key=lambda item: (
             float(item[1].inference_ms_per_sample),
-            -float(item[1].test_metrics["accuracy"]),
-            -float(item[1].test_metrics["macro_f1"]),
+            -float(item[1].selection_val_metrics["accuracy"]),
+            -float(item[1].selection_val_metrics["macro_f1"]),
             item[0],
         ),
     )[0]
@@ -3611,14 +3653,14 @@ def export_benchmark_report(
             handle.write("\n")
         print(f"[*] Wrote explainability config: {explain_path}")
 
-def export_model(estimator: Any, runtime_model_name: str) -> None:
+def export_model(estimator: Any, runtime_model_name: str, joblib_path: Optional[str] = None) -> None:
     if m2c is None:
         print("[!] Skipping C export: m2cgen is not installed (pip install m2cgen).")
         return
 
     code = m2c.export_to_c(estimator)
 
-    c_header = """/*
+    c_header = f"""/*
  * AUTO-GENERATED MACHINE LEARNING MODEL
  * Generated by train_ml.py (scikit-learn + m2cgen).
  * Runtime model: {runtime_model_name}
@@ -3660,7 +3702,7 @@ static inline void sentinel_ml_scale_input(double input[20]) {
  * Wrapper for Sentinel 20-feature vector.
  * Returns probability of attack [0.0 - 1.0].
  */
-static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scratch_t *scr) {
+static inline double run_ml_inference(const sentinel_feature_vector_t *f) {
     double input[20];
     double output[2];
 
@@ -3686,7 +3728,7 @@ static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scr
     input[19] = (double)f->dns_query_count;
 
     sentinel_ml_scale_input(input);
-    score(input, output, scr);
+    score(input, output);
     return output[1];
 }
 
@@ -3702,8 +3744,10 @@ static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scr
     print(f"Successfully generated ML model: {output_path}")
 
     if joblib is not None:
-        model_path = os.path.join(os.path.dirname(__file__), "benchmarks", "sentinel_model.joblib")
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        model_path = joblib_path or os.path.join(os.path.dirname(__file__), "benchmarks", "sentinel_model.joblib")
+        model_dir = os.path.dirname(model_path)
+        if model_dir:
+            os.makedirs(model_dir, exist_ok=True)
         joblib.dump(  # nosec B301
             {
                 "estimator": estimator,
@@ -3718,21 +3762,33 @@ static inline double run_ml_inference(const sentinel_feature_vector_t *f, ml_scr
         print(f"[*] Saved model for SHAP/explain API: {model_path}")
 
 
-def train_and_export_model() -> None:
+def train_and_export_model(
+    data_dirs: Optional[Sequence[str]] = None,
+    lite_mode: Optional[bool] = None,
+    min_samples: Optional[int] = None,
+    joblib_path: Optional[str] = None,
+    auto_repo_data: Optional[bool] = None,
+) -> None:
     print("=========================================================")
     print("SENTINEL CORE - ML TRAINING PIPELINE")
     print("=========================================================")
     print(f"[*] Trainer version: {TRAINER_VERSION}")
 
-    lite_mode = os.environ.get("SENTINEL_LITE_TRAIN", "0") == "1"
-    min_samples = 1000 if lite_mode else 100000
+    if lite_mode is None:
+        lite_mode = os.environ.get("SENTINEL_LITE_TRAIN", "0") == "1"
+    if min_samples is None:
+        min_samples = 1000 if lite_mode else 100000
     required_dataset_types = determine_required_dataset_types()
     if required_dataset_types:
         print(f"[*] Required dataset families: {', '.join(required_dataset_types)}")
 
+    resolved_data_dirs = determine_data_dirs(data_dirs, auto_repo_data=auto_repo_data)
+    if resolved_data_dirs:
+        print(f"[*] Data directories: {', '.join(resolved_data_dirs)}")
+
     print(f"[*] Gathering datasets (min required: {min_samples})...")
     try:
-        chunks = gather_datasets(min_total=min_samples)
+        chunks = gather_datasets(data_dirs=resolved_data_dirs, min_total=min_samples)
     except Exception as exc:
         print(f"[!] Error loading datasets: {exc}")
         return
@@ -3796,8 +3852,73 @@ def train_and_export_model() -> None:
     print_feature_importance(deployed_result.artifact.estimator)
 
     print("[*] Exporting model to raw C code via m2cgen...")
-    export_model(deployed_result.artifact.estimator, runtime_model_name)
+    export_model(deployed_result.artifact.estimator, runtime_model_name, joblib_path=joblib_path)
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Sentinel mixed-dataset ML trainer")
+    parser.add_argument(
+        "--dataset-dir",
+        dest="dataset_dirs",
+        action="append",
+        default=[],
+        help="Directory containing real dataset files. Repeat for multiple directories.",
+    )
+    parser.add_argument(
+        "--auto-repo-data",
+        action="store_true",
+        help="Also auto-scan repo subdirectories for dataset files. Disabled by default.",
+    )
+    parser.add_argument(
+        "--lite",
+        action="store_true",
+        help="Use lite training mode (lower sample target).",
+    )
+    parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=None,
+        help="Override minimum accepted sample count before training.",
+    )
+    parser.add_argument(
+        "--required-datasets",
+        type=str,
+        default=None,
+        help="Comma-separated required dataset family names.",
+    )
+    parser.add_argument(
+        "--runtime-max-inference-ms",
+        type=float,
+        default=None,
+        help="Latency budget in milliseconds per sample for runtime model selection.",
+    )
+    parser.add_argument(
+        "--runtime-accuracy-tie-eps",
+        type=float,
+        default=None,
+        help="Accuracy epsilon for latency-first tie-breaking during runtime model selection.",
+    )
+    parser.add_argument(
+        "--export-joblib",
+        type=str,
+        default=None,
+        help="Override the exported joblib path for the Explain API model artifact.",
+    )
+    return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
-    train_and_export_model()
+    args = parse_args()
+    if args.required_datasets is not None:
+        os.environ["SENTINEL_REQUIRED_DATASETS"] = args.required_datasets
+    if args.runtime_max_inference_ms is not None:
+        os.environ["SENTINEL_RUNTIME_MAX_INFERENCE_MS"] = f"{args.runtime_max_inference_ms}"
+    if args.runtime_accuracy_tie_eps is not None:
+        os.environ["SENTINEL_RUNTIME_ACCURACY_TIE_EPS"] = f"{args.runtime_accuracy_tie_eps}"
+    train_and_export_model(
+        data_dirs=args.dataset_dirs or None,
+        lite_mode=args.lite or None,
+        min_samples=args.min_samples,
+        joblib_path=args.export_joblib,
+        auto_repo_data=args.auto_repo_data,
+    )

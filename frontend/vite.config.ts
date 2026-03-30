@@ -29,10 +29,8 @@ export default defineConfig(() => ({
           if (id.includes("@radix-ui")) {
             return "radix";
           }
-          // React runtime — kept tiny and always cached by the browser.
-          if (id.includes("node_modules/react/") || id.includes("node_modules/react-dom/")) {
-            return "react";
-          }
+          // Keep React, react-dom, and scheduler together in vendor.
+          // Splitting React separately caused a production circular import.
           // Everything else in node_modules lands in a single stable vendor chunk.
           if (id.includes("node_modules")) {
             return "vendor";

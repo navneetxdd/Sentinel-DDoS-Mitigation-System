@@ -1,8 +1,18 @@
 /**
- * Read mitigation-related integration settings from localStorage (same key as Settings page).
- * Used by Mitigation Control for alert webhook and external firewall API.
+ * Read non-secret integration settings from localStorage.
+ * Sensitive values stay in memory only for the current browser session.
  */
 const STORAGE_KEY = "sentinel-ui-settings-v1";
+
+type VolatileSecretSettings = {
+  alertWebhookSecret: string;
+  geminiApiKey: string;
+};
+
+const volatileSecrets: VolatileSecretSettings = {
+  alertWebhookSecret: "",
+  geminiApiKey: "",
+};
 
 export interface MitigationIntegrationSettings {
   alertWebhookUrl: string;
@@ -14,36 +24,50 @@ export interface GeminiXAISettings {
   geminiApiKey: string;
 }
 
-export function getMitigationIntegrationSettings(): MitigationIntegrationSettings {
+function readStoredSettings(): Record<string, unknown> {
   if (typeof window === "undefined") {
-    return { alertWebhookUrl: "", alertWebhookSecret: "", externalFirewallApiUrl: "" };
+    return {};
   }
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { alertWebhookUrl: "", alertWebhookSecret: "", externalFirewallApiUrl: "" };
-    const p = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      alertWebhookUrl: typeof p.alertWebhookUrl === "string" ? p.alertWebhookUrl : "",
-      alertWebhookSecret: typeof p.alertWebhookSecret === "string" ? p.alertWebhookSecret : "",
-      externalFirewallApiUrl: typeof p.externalFirewallApiUrl === "string" ? p.externalFirewallApiUrl : "",
-    };
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if ("alertWebhookSecret" in parsed || "geminiApiKey" in parsed) {
+      delete parsed.alertWebhookSecret;
+      delete parsed.geminiApiKey;
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+    }
+    return parsed;
   } catch {
-    return { alertWebhookUrl: "", alertWebhookSecret: "", externalFirewallApiUrl: "" };
+    return {};
   }
 }
 
+export function setVolatileSecretSettings(next: Partial<VolatileSecretSettings>) {
+  if (typeof next.alertWebhookSecret === "string") {
+    volatileSecrets.alertWebhookSecret = next.alertWebhookSecret;
+  }
+  if (typeof next.geminiApiKey === "string") {
+    volatileSecrets.geminiApiKey = next.geminiApiKey;
+  }
+}
+
+export function clearVolatileSecretSettings() {
+  volatileSecrets.alertWebhookSecret = "";
+  volatileSecrets.geminiApiKey = "";
+}
+
+export function getMitigationIntegrationSettings(): MitigationIntegrationSettings {
+  const stored = readStoredSettings();
+  return {
+    alertWebhookUrl: typeof stored.alertWebhookUrl === "string" ? stored.alertWebhookUrl : "",
+    alertWebhookSecret: volatileSecrets.alertWebhookSecret,
+    externalFirewallApiUrl: typeof stored.externalFirewallApiUrl === "string" ? stored.externalFirewallApiUrl : "",
+  };
+}
+
 export function getGeminiXAISettings(): GeminiXAISettings {
-  if (typeof window === "undefined") {
-    return { geminiApiKey: "" };
-  }
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { geminiApiKey: "" };
-    const p = JSON.parse(raw) as Record<string, unknown>;
-    return {
-      geminiApiKey: typeof p.geminiApiKey === "string" ? p.geminiApiKey : "",
-    };
-  } catch {
-    return { geminiApiKey: "" };
-  }
+  return {
+    geminiApiKey: volatileSecrets.geminiApiKey,
+  };
 }

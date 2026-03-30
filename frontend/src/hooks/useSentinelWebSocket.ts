@@ -617,7 +617,7 @@ function useSentinelWebSocketState(): SentinelState {
       });
   }, []);
 
-      const sendCommand = useCallback((command: string, params?: Record<string, string>) => {
+  const sendCommand = useCallback((command: string, params?: Record<string, string>) => {
     const ws = wsRef.current;
     const requestId = generateRequestId();
     if (ws && ws.readyState === WebSocket.OPEN) {

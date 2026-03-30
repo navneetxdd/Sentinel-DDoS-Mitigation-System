@@ -19,6 +19,7 @@ This README is the canonical all-in-one operational guide. New users should be a
 - [Runtime Commands](#runtime-commands)
 - [Kali-Specific Setup Notes](#kali-specific-setup-notes)
 - [Runtime Configuration](#runtime-configuration)
+- [Production External Deployment](#production-external-deployment)
 - [Attack Simulation Playbook](#attack-simulation-playbook)
 - [WebSocket Streams](#websocket-streams)
 - [Verification Checklist](#verification-checklist)
@@ -104,6 +105,45 @@ flowchart LR
 - Mininet and OVS workflows are more reliable on native Linux. In WSL, networking edge cases and bridge behavior can vary by host setup.
 - GUI terminal spawning from shell launchers may fail in headless WSL sessions; use the manual multi-terminal startup sequence.
 - For production-like benchmarking and mitigation validation, prefer native Linux over WSL.
+
+## Production External Deployment
+
+For external-facing deployment and internet-path DDoS validation, use these production artifacts:
+
+- `production_readiness_audit.md` for networking transition, router forwarding, and validation runbook.
+- `deploy/bootstrap_ubuntu22_vm.sh` for one-shot Ubuntu 22.04 VM provisioning (pipeline, API, frontend, nginx, systemd).
+- `external_attack_guide.md` for Public IP validation, port forwarding, and WSL networking modes.
+- `deploy/bootstrap_kali_single_node.sh` plus `deploy/run_sentinel_stack.sh` for Kali single-node stack (pipeline + SDN + Redis + Nginx + Explain API + Frontend) without service-port collisions.
+- `deploy/stop_kali_single_node.sh` to cleanly stop the Kali single-node stack.
+- `scripts/bridge_mode_guide.sh` for external bridge-mode topology command sequence.
+- `scripts/test_external_flood.sh` for attacker-host flood generation during external validation.
+- `deploy/enable_xdp_native.sh` or `scripts/attach_tc_clsact.sh --xdp-native <iface>` for XDP native/driver-mode attach.
+
+Example bootstrap:
+
+```bash
+sudo bash deploy/bootstrap_ubuntu22_vm.sh \
+  --repo-path /opt/Sentinel-main \
+  --iface eth0 \
+  --ws-port 8765 \
+  --explain-port 5001 \
+  --web-port 80 \
+  --ws-api-key '<replace-with-strong-secret>'
+```
+
+Example Kali single-node bootstrap and launch:
+
+```bash
+sudo bash deploy/bootstrap_kali_single_node.sh \
+  --repo-path /opt/Sentinel-main \
+  --ws-port 8765 \
+  --explain-port 5001 \
+  --frontend-port 5200 \
+  --web-port 80 \
+  --ws-api-key '<replace-with-strong-secret>'
+
+sudo bash deploy/run_sentinel_stack.sh --repo-path /opt/Sentinel-main
+```
 
 ## Quick Start
 

@@ -4,8 +4,8 @@ param(
     [ValidateSet('start', 'status', 'stop')]
     [string]$Action = 'start',
 
-    [ValidateSet('baseline', 'progressive', 'full')]
-    [string]$LaunchMode = 'baseline',
+    [ValidateSet('baseline', 'progressive', 'full', 'production')]
+    [string]$LaunchMode = 'production',
 
     [string]$WSLDistro = 'kali-linux',
     [string]$RepoRoot = $PSScriptRoot,
@@ -128,29 +128,9 @@ if ($Action -eq 'stop') {
 
 Initialize-Directories
 
-$envVars = @{'SENTINEL_INTEGRATION_PROFILE' = $LaunchMode}
-switch ($LaunchMode) {
-    'full' {
-        $envVars['SENTINEL_INTEL_FEED_ENABLED'] = '1'
-        $envVars['SENTINEL_MODEL_EXTENSION_ENABLED'] = '1'
-        $envVars['SENTINEL_CONTROLLER_EXTENSION_ENABLED'] = '1'
-        $envVars['SENTINEL_SIGNATURE_FEED_ENABLED'] = '1'
-        $envVars['SENTINEL_DATAPLANE_EXTENSION_ENABLED'] = '1'
-    }
-    'progressive' {
-        $envVars['SENTINEL_INTEL_FEED_ENABLED'] = '1'
-        $envVars['SENTINEL_MODEL_EXTENSION_ENABLED'] = '1'
-        $envVars['SENTINEL_CONTROLLER_EXTENSION_ENABLED'] = '0'
-        $envVars['SENTINEL_SIGNATURE_FEED_ENABLED'] = '1'
-        $envVars['SENTINEL_DATAPLANE_EXTENSION_ENABLED'] = '0'
-    }
-    default {
-        $envVars['SENTINEL_INTEL_FEED_ENABLED'] = '0'
-        $envVars['SENTINEL_MODEL_EXTENSION_ENABLED'] = '0'
-        $envVars['SENTINEL_CONTROLLER_EXTENSION_ENABLED'] = '0'
-        $envVars['SENTINEL_SIGNATURE_FEED_ENABLED'] = '0'
-        $envVars['SENTINEL_DATAPLANE_EXTENSION_ENABLED'] = '0'
-    }
+$envVars = @{
+    'SENTINEL_PROFILE' = $LaunchMode
+    'SENTINEL_INTEGRATION_PROFILE' = $LaunchMode
 }
 
 $wslRepoPath = (($RepoRoot -replace '\\', '/' -replace '^([A-Za-z]):', '/mnt/$1')).ToLower().TrimEnd('.')

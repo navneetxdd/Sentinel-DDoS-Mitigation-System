@@ -15,6 +15,7 @@
 # Usage:
 #   ./scripts/attach_tc_clsact.sh <interface>
 #   ./scripts/attach_tc_clsact.sh eth0
+#   ./scripts/attach_tc_clsact.sh --xdp-native eth0
 #
 # Detach:
 #   tc qdisc del dev <interface> clsact 2>/dev/null || true
@@ -25,10 +26,19 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_DIR="$(cd "$SCRIPT_DIR/../proxy" && pwd)"
 TC_OBJ="$PROXY_DIR/sentinel_tc.o"
+XDP_OBJ="$PROXY_DIR/sentinel_xdp.o"
+
+ATTACH_XDP_NATIVE=0
+
+if [ $# -ge 1 ] && [ "$1" = "--xdp-native" ]; then
+    ATTACH_XDP_NATIVE=1
+    shift
+fi
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <interface>"
+    echo "Usage: $0 [--xdp-native] <interface>"
     echo "  e.g. $0 eth0"
+    echo "  e.g. $0 --xdp-native eth0"
     exit 1
 fi
 
@@ -39,9 +49,26 @@ if [ ! -f "$TC_OBJ" ]; then
     exit 1
 fi
 
+if [ "$ATTACH_XDP_NATIVE" -eq 1 ] && [ ! -f "$XDP_OBJ" ]; then
+    echo "[!] Build sentinel_xdp.o first: make -C proxy sentinel_xdp.o"
+    exit 1
+fi
+
 if [ "$(id -u)" -ne 0 ]; then
     echo "[!] Run as root (tc requires CAP_NET_ADMIN)"
     exit 1
+fi
+
+if [ "$ATTACH_XDP_NATIVE" -eq 1 ]; then
+    echo "[*] Attempting XDP native/driver-mode attach on $IFACE"
+    ip link set dev "$IFACE" xdp off 2>/dev/null || true
+    if ip link set dev "$IFACE" xdpdrv obj "$XDP_OBJ" sec xdp; then
+        echo "[*] XDP driver mode attached successfully on $IFACE"
+    else
+        echo "[!] XDP driver mode attach failed on $IFACE"
+        echo "[!] Ensure NIC/driver supports native XDP (for example i40e/ixgbe/mlx5)."
+        exit 1
+    fi
 fi
 
 # Add clsact qdisc if not present
@@ -55,4 +82,7 @@ echo "[*] Attaching sentinel_tc to $IFACE ingress"
 tc filter add dev "$IFACE" ingress bpf direct-action obj "$TC_OBJ" sec classifier
 
 echo "[*] TC clsact attached. Blacklist map will be populated by the pipeline."
+if [ "$ATTACH_XDP_NATIVE" -eq 1 ]; then
+    echo "[*] XDP native is active; TC remains as policy fallback path."
+fi
 echo "[*] To detach: tc qdisc del dev $IFACE clsact"

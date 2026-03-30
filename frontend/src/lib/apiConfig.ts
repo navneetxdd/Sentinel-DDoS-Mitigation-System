@@ -9,16 +9,27 @@ const makeUnique = (values: string[]) => {
 	});
 };
 
-const browserHost = typeof window !== "undefined" ? window.location.hostname : "";
-const httpProtocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "https:" : "http:";
-const wsProtocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+const browserLocation = typeof window !== "undefined" ? window.location : null;
+const browserHost = browserLocation?.hostname ?? "";
+const browserHostWithPort = browserLocation?.host ?? "";
+const browserOrigin = browserLocation?.origin ?? "";
+const browserPort = browserLocation?.port ?? "";
+const httpProtocol = browserLocation?.protocol === "https:" ? "https:" : "http:";
+const wsProtocol = browserLocation?.protocol === "https:" ? "wss:" : "ws:";
+const numericBrowserPort = browserPort ? Number(browserPort) : NaN;
+const isDirectFrontendDevPort =
+	Number.isFinite(numericBrowserPort) &&
+	(numericBrowserPort === 5173 || (numericBrowserPort >= 5200 && numericBrowserPort <= 5220));
 
 const explainApiUrl = import.meta.env.VITE_EXPLAIN_API_URL?.trim() ?? "";
 const wsUrl = import.meta.env.VITE_WS_URL?.trim() ?? "";
 export const WS_API_KEY = import.meta.env.VITE_WS_API_KEY?.trim() ?? "";
+const sameOriginExplainApiUrl = browserOrigin ? `${trimTrailingSlash(browserOrigin)}/api` : "";
+const sameOriginWsUrl = browserHostWithPort ? `${wsProtocol}//${browserHostWithPort}/ws` : "";
 
 export const EXPLAIN_API_CANDIDATES = makeUnique([
 	explainApiUrl ? trimTrailingSlash(explainApiUrl) : "",
+	!isDirectFrontendDevPort ? sameOriginExplainApiUrl : "",
 	browserHost ? `${httpProtocol}//${browserHost}:5001` : "",
 	"http://localhost:5001",
 	"http://127.0.0.1:5001",
@@ -26,6 +37,7 @@ export const EXPLAIN_API_CANDIDATES = makeUnique([
 
 export const WS_URL_CANDIDATES = makeUnique([
 	wsUrl,
+	!isDirectFrontendDevPort ? sameOriginWsUrl : "",
 	browserHost ? `${wsProtocol}//${browserHost}:8765` : "",
 	"ws://localhost:8765",
 	"ws://127.0.0.1:8765",
