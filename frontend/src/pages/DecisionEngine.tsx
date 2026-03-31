@@ -8,14 +8,17 @@ import { ModelBenchmarkPanel } from "@/components/dashboard/ModelBenchmarkPanel"
 import { SimulationToggle } from "@/components/dashboard/SimulationToggle";
 import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
-import { usePrimaryAttackerSourceIp } from "@/hooks/usePrimaryAttackerSourceIp";
+import { selectPrimaryAttackerSourceIp } from "@/lib/primarySourceIp";
 import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Brain, Cpu, Database, Network, Layers, Shield, Zap, Gauge } from "lucide-react";
 
 const DecisionEngine = () => {
   const ws = useSentinelWebSocket();
-  const primaryAttackerIp = usePrimaryAttackerSourceIp(ws.topSources, ws.activityLog);
+  const primaryAttackerIp = useMemo(
+    () => selectPrimaryAttackerSourceIp(ws.topSources, ws.activityLog),
+    [ws.topSources, ws.activityLog],
+  );
   const benchmarks = useModelBenchmarkReport();
   const [simulatingFlashCrowd, setSimulatingFlashCrowd] = useState(false);
   const [simulatingDDoS, setSimulatingDDoS] = useState(false);

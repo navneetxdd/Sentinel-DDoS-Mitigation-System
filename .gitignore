@@ -23,8 +23,10 @@ __pycache__/
 *.pyd
 benchmarks/results/
 .env
+.env.development
 .env.local
 .env.*.local
+frontend/.env.development
 sentinel_events.db
 *.db-wal
 *.db-shm

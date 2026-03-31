@@ -110,7 +110,6 @@ flowchart LR
 
 For external-facing deployment and internet-path DDoS validation, use these production artifacts:
 
-- `production_readiness_audit.md` for networking transition, router forwarding, and validation runbook.
 - `deploy/bootstrap_ubuntu22_vm.sh` for one-shot Ubuntu 22.04 VM provisioning (pipeline, API, frontend, nginx, systemd).
 - `external_attack_guide.md` for Public IP validation, port forwarding, and WSL networking modes.
 - `deploy/bootstrap_kali_single_node.sh` plus `deploy/run_sentinel_stack.sh` for Kali single-node stack (pipeline + SDN + Redis + Nginx + Explain API + Frontend) without service-port collisions.
@@ -146,6 +145,34 @@ sudo bash deploy/run_sentinel_stack.sh --repo-path /opt/Sentinel-main
 ```
 
 ## Quick Start
+
+### Clone to running dashboard (recommended)
+
+Use this flow for a fresh clone on Kali/Ubuntu:
+
+```bash
+git clone https://github.com/<your-org-or-user>/Sentinel-main.git
+cd Sentinel-main
+chmod +x deploy/bootstrap_kali_single_node.sh deploy/run_sentinel_stack.sh deploy/stop_kali_single_node.sh
+
+sudo bash deploy/bootstrap_kali_single_node.sh \
+  --repo-path "$(pwd)" \
+  --ws-port 8765 \
+  --explain-port 5001 \
+  --frontend-port 5200 \
+  --web-port 80 \
+  --ws-api-key '<replace-with-strong-secret>'
+
+sudo bash deploy/run_sentinel_stack.sh --repo-path "$(pwd)"
+```
+
+Open the dashboard at `http://localhost` (or `http://localhost:<SENTINEL_WEB_PORT>` if overridden).
+
+Stop the stack:
+
+```bash
+sudo bash deploy/stop_kali_single_node.sh --repo-path "$(pwd)"
+```
 
 ### Option 1: Linux / Kali multi-launcher
 
@@ -428,7 +455,7 @@ Build XDP and TC eBPF objects:
 make kernel
 ```
 
-Run the sanity and integration test target:
+Run the sanity test target:
 
 ```bash
 make test
@@ -780,7 +807,7 @@ make test
 
 ## Benchmarks and Integration Tests
 
-Run the controller integration test after the controller and topology are up:
+Run controller-path validation after the controller and topology are up:
 
 ```bash
 ./scripts/test_ryu_integration.sh

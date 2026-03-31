@@ -4,47 +4,47 @@
   "global_importances": [
     {
       "name": "avg_packet_size",
-      "importance": 0.4070841141072379
+      "importance": 0.4568519709413499
     },
     {
       "name": "avg_iat_us",
-      "importance": 0.271654366327031
+      "importance": 0.2576368613851335
     },
     {
       "name": "rst_ratio",
-      "importance": 0.10218508873814276
+      "importance": 0.09811001405425951
     },
     {
       "name": "stddev_packet_size",
-      "importance": 0.06058559052748981
-    },
-    {
-      "name": "syn_ratio",
-      "importance": 0.04605222990017583
+      "importance": 0.05402029098280295
     },
     {
       "name": "src_packets_per_second",
-      "importance": 0.036775173857214793
+      "importance": 0.04211677341692997
+    },
+    {
+      "name": "syn_ratio",
+      "importance": 0.03364713684417962
     },
     {
       "name": "fin_ratio",
-      "importance": 0.03442832614695647
-    },
-    {
-      "name": "packets_per_second",
-      "importance": 0.0266192057174924
+      "importance": 0.02451762070267834
     },
     {
       "name": "dns_query_count",
-      "importance": 0.011005040244078643
+      "importance": 0.01584884728949604
+    },
+    {
+      "name": "packets_per_second",
+      "importance": 0.01421284811782206
     },
     {
       "name": "http_request_count",
-      "importance": 0.0032016808267170266
+      "importance": 0.002838012876262338
     },
     {
       "name": "bytes_per_second",
-      "importance": 0.0004091836074632774
+      "importance": 0.00019962338908577516
     },
     {
       "name": "dst_port_entropy",
@@ -86,27 +86,35 @@
   "per_class_attack_importance": [
     {
       "name": "avg_iat_us",
-      "attack_recall_importance": 0.005579766220013845
-    },
-    {
-      "name": "fin_ratio",
-      "attack_recall_importance": 0.0006686216212546947
+      "attack_recall_importance": 0.013728804355204368
     },
     {
       "name": "src_packets_per_second",
-      "attack_recall_importance": 0.00035297791172839155
+      "attack_recall_importance": 0.0014288817388235324
+    },
+    {
+      "name": "packets_per_second",
+      "attack_recall_importance": 0.0013406372608913975
+    },
+    {
+      "name": "fin_ratio",
+      "attack_recall_importance": 0.0009571131837250076
+    },
+    {
+      "name": "syn_ratio",
+      "attack_recall_importance": 0.0005735891065585808
     },
     {
       "name": "http_request_count",
-      "attack_recall_importance": 0.00010521456984213806
+      "attack_recall_importance": 0.00033940183820039643
     },
     {
       "name": "dns_query_count",
-      "attack_recall_importance": 4.0728220584059414e-05
+      "attack_recall_importance": 8.145644116808182e-05
     },
     {
       "name": "bytes_per_second",
-      "attack_recall_importance": 0.0
+      "attack_recall_importance": 1.0182055146024105e-05
     },
     {
       "name": "dst_port_entropy",
@@ -145,24 +153,16 @@
       "attack_recall_importance": 0.0
     },
     {
-      "name": "packets_per_second",
-      "attack_recall_importance": -6.788036763979062e-06
-    },
-    {
-      "name": "syn_ratio",
-      "attack_recall_importance": -0.00032582576467232727
-    },
-    {
       "name": "stddev_packet_size",
-      "attack_recall_importance": -0.0017648895586418096
+      "attack_recall_importance": -0.0013406372608913975
     },
     {
       "name": "avg_packet_size",
-      "attack_recall_importance": -0.005365943061947598
+      "attack_recall_importance": -0.00576304321264202
     },
     {
       "name": "rst_ratio",
-      "attack_recall_importance": -0.007507568660991819
+      "attack_recall_importance": -0.008566502396176992
     }
   ]
 }

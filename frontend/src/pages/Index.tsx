@@ -10,8 +10,9 @@ import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
 import { DefendedHostWidget } from "@/components/dashboard/DefendedHostWidget";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
-import { usePrimaryAttackerSourceIp } from "@/hooks/usePrimaryAttackerSourceIp";
+import { selectPrimaryAttackerSourceIp } from "@/lib/primarySourceIp";
 import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
+import { useMemo } from "react";
 import {
   Activity,
   Layers,
@@ -26,7 +27,10 @@ import {
 
 const Index = () => {
   const ws = useSentinelWebSocket();
-  const primaryAttackerIp = usePrimaryAttackerSourceIp(ws.topSources, ws.activityLog);
+  const primaryAttackerIp = useMemo(
+    () => selectPrimaryAttackerSourceIp(ws.topSources, ws.activityLog),
+    [ws.topSources, ws.activityLog],
+  );
   const benchmarks = useModelBenchmarkReport();
   const runtimeModel = benchmarks.report?.models.find(
     (model) => model.name === benchmarks.report?.runtime_model,

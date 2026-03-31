@@ -1,6 +1,6 @@
 model,accuracy,macro_f1,balanced_accuracy,exported
 decision_tree,0.970166,0.947320,0.946987,yes
-isolation_forest,0.979596,0.964144,0.966047,no
+isolation_forest,0.979849,0.964587,0.966454,no
 knn,0.966798,0.941295,0.940387,no
-random_forest,0.984112,0.972729,0.986066,yes
-xgboost,0.984526,0.973288,0.983844,no
+random_forest,0.983217,0.971332,0.987036,yes
+xgboost,0.984720,0.973706,0.985824,no

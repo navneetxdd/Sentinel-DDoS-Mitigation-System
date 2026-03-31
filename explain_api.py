@@ -674,7 +674,7 @@ class ExplainHandler(BaseHTTPRequestHandler):
 
         try:
             shap_values = ExplainHandler._explainer.shap_values(X_scaled)
-            
+
             # TreeExplainer output shape varies across SHAP versions/model types.
             # Normalize to a 2D float array: [num_samples, num_features].
             shap_values = np.asarray(shap_values)

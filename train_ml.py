@@ -437,7 +437,7 @@ def detect_sentinel_json_payload_type(path: str) -> Optional[str]:
     required_keys = DATASET_SIGNATURES["sentinel_features"]
     if required_keys.issubset(keys):
         return "sentinel_json"
-    
+
     # Fallback for older sentinel JSON formats if they have enough mapped features
     label_keys = {"label", "attack", "class", "target"}
     if (label_keys & keys) and len(keys & required_keys) >= (NUM_FEATURES // 2):

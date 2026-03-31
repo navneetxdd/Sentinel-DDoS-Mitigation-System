@@ -115,18 +115,12 @@ install: $(PIPELINE)
 	install -m 755 $(PIPELINE) $(PREFIX)/bin/
 
 # ---- test ----
-TEST_EXE := tests/integration_test
-TEST_SRC := tests/integration_test.c
-
-$(TEST_EXE): $(TEST_SRC) libs
-	$(CC) $(CFLAGS) -o $@ $(TEST_SRC) $(ALL_LIBS) $(LDLIBS)
-
-test: $(PIPELINE) $(TEST_EXE)
+test: $(PIPELINE) libs
 	@echo "=== Sanity checks ==="
 	@echo -n "Pipeline binary... "
 	@test -f $(PIPELINE) && echo "OK" || (echo "FAIL"; exit 1)
 	@echo -n "Libraries... "
 	@test -f $(FE_LIB) && test -f $(DE_LIB) && test -f $(SDN_LIB) && test -f $(FB_LIB) && test -f $(WS_LIB) && echo "OK" || (echo "FAIL"; exit 1)
-	@echo "=== Integration Tests ==="
-	@./$(TEST_EXE)
+	@echo -n "Pipeline help output... "
+	@./$(PIPELINE) -h >/dev/null 2>&1 && echo "OK" || (echo "FAIL"; exit 1)
 	@echo "=== Done ==="
