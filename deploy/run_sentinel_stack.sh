@@ -9,10 +9,24 @@ ENV_FILE=""
 DEFAULT_FRONTEND_PORT=5200
 FRONTEND_PORT_MIN=5200
 FRONTEND_PORT_MAX=5220
+STOP_ONLY=0
+WS_PORT_ARG=""
+EXPLAIN_PORT_ARG=""
+FRONTEND_PORT_ARG=""
+WEB_PORT_ARG=""
+WS_API_KEY_ARG=""
+FORCE_BOOTSTRAP=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo-path) REPO_PATH="$2"; shift 2 ;;
+    --ws-port) WS_PORT_ARG="$2"; shift 2 ;;
+    --explain-port) EXPLAIN_PORT_ARG="$2"; shift 2 ;;
+    --frontend-port) FRONTEND_PORT_ARG="$2"; shift 2 ;;
+    --web-port) WEB_PORT_ARG="$2"; shift 2 ;;
+    --ws-api-key) WS_API_KEY_ARG="$2"; shift 2 ;;
+    --force-bootstrap) FORCE_BOOTSTRAP=1; shift ;;
+    --stop) STOP_ONLY=1; shift ;;
     *) echo "Unknown argument: $1"; exit 1 ;;
   esac
 done
@@ -36,6 +50,119 @@ ENV_FILE="$STATE_DIR/env"
 echo "============================================"
 echo "  SENTINEL STACK LAUNCH"
 echo "============================================"
+
+bootstrap_stack_if_needed() {
+  local need_bootstrap=0
+  local ws_port="${WS_PORT_ARG:-${SENTINEL_WS_PORT:-8765}}"
+  local explain_port="${EXPLAIN_PORT_ARG:-${SENTINEL_EXPLAIN_PORT:-5001}}"
+  local frontend_port="${FRONTEND_PORT_ARG:-${SENTINEL_FRONTEND_PORT:-5200}}"
+  local web_port="${WEB_PORT_ARG:-${SENTINEL_WEB_PORT:-5173}}"
+  local ws_api_key="${WS_API_KEY_ARG:-${SENTINEL_WS_API_KEY:-change-me-in-prod}}"
+
+  if [[ "$FORCE_BOOTSTRAP" -eq 1 ]]; then
+    need_bootstrap=1
+  fi
+  [[ ! -f "$ENV_FILE" ]] && need_bootstrap=1
+  [[ ! -f "$REPO_PATH/sentinel_pipeline" ]] && need_bootstrap=1
+  [[ ! -x "$REPO_PATH/.venv/bin/python3" ]] && need_bootstrap=1
+  [[ ! -f "$REPO_PATH/frontend/dist/index.html" ]] && need_bootstrap=1
+
+  if [[ "$need_bootstrap" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo
+  echo "[bootstrap] Missing artifacts detected; running self-healing bootstrap..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y \
+    build-essential gcc make clang llvm libelf-dev pkg-config \
+    libpcap-dev libpcap0.8-dev libcurl4-openssl-dev libssl-dev \
+    python3 python3-venv python3-pip jq curl git nginx redis-server \
+    net-tools iproute2
+
+  if ! command -v node >/dev/null 2>&1; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+  fi
+
+  cd "$REPO_PATH"
+  make clean || true
+  make
+  make -C proxy sentinel_xdp.o sentinel_tc.o || true
+
+  if [[ ! -x "$REPO_PATH/.venv/bin/python3" ]]; then
+    rm -rf "$REPO_PATH/.venv" || true
+    python3 -m venv --copies "$REPO_PATH/.venv"
+  fi
+  # shellcheck disable=SC1091
+  source "$REPO_PATH/.venv/bin/activate"
+  pip install --upgrade pip
+  pip install -r "$REPO_PATH/requirements.txt"
+  pip install os-ken eventlet==0.35.2 tinyrpc
+
+  if [[ ! -d "$REPO_PATH/frontend/node_modules/vite" ]]; then
+    rm -rf "$REPO_PATH/frontend/node_modules" "$REPO_PATH/frontend/package-lock.json" 2>/dev/null || true
+    (cd "$REPO_PATH/frontend" && npm install)
+  fi
+  (
+    cd "$REPO_PATH/frontend"
+    VITE_WS_URL="" VITE_EXPLAIN_API_URL="" VITE_WS_API_KEY="$ws_api_key" \
+      node node_modules/vite/bin/vite.js build
+  )
+
+  mkdir -p "$STATE_DIR"
+  cat > "$ENV_FILE" <<EOF
+SENTINEL_INTERFACE=auto
+SENTINEL_QUEUE_ID=0
+SENTINEL_SHARED_STATE_BACKEND=shm
+SENTINEL_SHARED_STATE_NAME=/sentinel_state_v1
+SENTINEL_SDN_CONTROLLER=http://127.0.0.1:8080
+SENTINEL_SDN_DPID=1
+SENTINEL_WS_PORT=${ws_port}
+SENTINEL_EXPLAIN_PORT=${explain_port}
+SENTINEL_FRONTEND_PORT=${frontend_port}
+SENTINEL_WEB_PORT=${web_port}
+SENTINEL_WS_API_KEY=${ws_api_key}
+SENTINEL_PROFILE=production
+SENTINEL_INTEGRATION_PROFILE=production
+SENTINEL_MAX_CLASSIFICATIONS_PER_SEC=5000
+EOF
+
+  cat > /etc/nginx/conf.d/sentinel-local.conf <<EOF
+server {
+    listen ${web_port};
+    server_name localhost 127.0.0.1 _;
+    root ${REPO_PATH}/frontend/dist;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:${explain_port}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Sentinel-API-Key "${ws_api_key}";
+    }
+
+    location /ws {
+        proxy_pass http://127.0.0.1:${ws_port};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+    }
+}
+EOF
+
+  nginx -t >/dev/null 2>&1 || true
+  systemctl enable nginx redis-server >/dev/null 2>&1 || true
+  systemctl restart nginx >/dev/null 2>&1 || service nginx restart >/dev/null 2>&1 || true
+  systemctl restart redis-server >/dev/null 2>&1 || service redis-server restart >/dev/null 2>&1 || true
+}
 
 port_busy() {
   local port="$1"
@@ -303,6 +430,114 @@ kill_stack_processes() {
   done
 }
 
+cleanup_runtime_state() {
+  rm -f \
+    "$STATE_DIR/frontend.mode" \
+    "$STATE_DIR/frontend_port_actual" \
+    "$STATE_DIR/frontend.index.check.html" \
+    "$STATE_DIR/frontend.pid" \
+    "$STATE_DIR/pipeline.pid" \
+    "$STATE_DIR/explain.pid" \
+    "$STATE_DIR/sdn.pid"
+}
+
+resolve_capture_iface() {
+  # Pick the first non-loopback interface with a global IPv4 address.
+  # This avoids stale env values (e.g. old 'eth0') when WSL interface naming changes.
+  local iface
+  local candidates
+
+  candidates="$(
+    ip -o -4 addr show scope global 2>/dev/null \
+      | awk '{print $2}' \
+      | sed 's/:$//' \
+      | sort -u
+  )"
+
+  # Filter common non-capture interfaces.
+  candidates="$(
+    echo "$candidates" \
+      | grep -Ev '^(lo|tailscale0|docker0|veth.*|br-.*|virbr.*|wg.*)$' \
+      || true
+  )"
+
+  # Prefer ethX style names.
+  for iface in $candidates; do
+    if [[ "$iface" =~ ^eth[0-9]+$ ]]; then
+      echo "$iface"
+      return 0
+    fi
+  done
+
+  for iface in $candidates; do
+    if [[ -n "$iface" ]]; then
+      echo "$iface"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+ensure_valid_capture_iface() {
+  local iface
+  iface="${SENTINEL_INTERFACE:-auto}"
+
+  if [[ -z "$iface" || "$iface" == "auto" ]]; then
+    if iface="$(resolve_capture_iface)"; then
+      SENTINEL_INTERFACE="$iface"
+      echo "  [INFO] Resolved capture interface: ${SENTINEL_INTERFACE}"
+    else
+      SENTINEL_INTERFACE="lo"
+      echo "  [WARN] Could not resolve capture interface; falling back to 'lo'."
+    fi
+  else
+    if ! ip link show dev "$iface" >/dev/null 2>&1; then
+      echo "  [WARN] Configured interface '$iface' not found; resolving automatically..."
+      if iface="$(resolve_capture_iface)"; then
+        SENTINEL_INTERFACE="$iface"
+        echo "  [INFO] Resolved capture interface: ${SENTINEL_INTERFACE}"
+      else
+        SENTINEL_INTERFACE="lo"
+        echo "  [WARN] Could not resolve capture interface; falling back to 'lo'."
+      fi
+    fi
+  fi
+
+  # Persist the resolved interface back into the env file (if present) so later runs are stable.
+  if [[ -n "${ENV_FILE:-}" && -f "$ENV_FILE" ]]; then
+    if grep -q '^SENTINEL_INTERFACE=' "$ENV_FILE" 2>/dev/null; then
+      sed -i "s/^SENTINEL_INTERFACE=.*/SENTINEL_INTERFACE=${SENTINEL_INTERFACE}/" "$ENV_FILE" || true
+    else
+      printf '\nSENTINEL_INTERFACE=%s\n' "$SENTINEL_INTERFACE" >> "$ENV_FILE" || true
+    fi
+  fi
+}
+
+attempt_xdp_then_fallback_tc() {
+  if [[ -z "${SENTINEL_INTERFACE:-}" || "${SENTINEL_INTERFACE}" == "auto" ]]; then
+    echo "  [INFO] Interface is auto; skipping explicit XDP/TC attach."
+    return 0
+  fi
+
+  if [[ -f "$REPO_PATH/proxy/sentinel_xdp.o" ]]; then
+    echo "  Attempting XDP native attach on ${SENTINEL_INTERFACE}..."
+    ip link set dev "${SENTINEL_INTERFACE}" xdp off 2>/dev/null || true
+    if ip link set dev "${SENTINEL_INTERFACE}" xdpdrv obj "$REPO_PATH/proxy/sentinel_xdp.o" sec xdp 2>/dev/null; then
+      echo "  [OK] XDP native attached on ${SENTINEL_INTERFACE}."
+      return 0
+    fi
+    echo "  [WARN] XDP native attach failed on ${SENTINEL_INTERFACE}; falling back to TC clsact."
+  else
+    echo "  [WARN] proxy/sentinel_xdp.o missing; falling back to TC clsact."
+  fi
+
+  if [[ -x "$REPO_PATH/scripts/attach_tc_clsact.sh" ]]; then
+    "$REPO_PATH/scripts/attach_tc_clsact.sh" "${SENTINEL_INTERFACE}" || \
+      echo "  [WARN] TC attach failed; kernel dropping may be unavailable."
+  fi
+}
+
 start_system_services() {
   if command -v systemctl >/dev/null 2>&1; then
     systemctl start redis-server >/dev/null 2>&1 || true
@@ -452,6 +687,19 @@ if [[ -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$ENV_FILE"
 fi
+bootstrap_stack_if_needed
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
+if [[ "$STOP_ONLY" -eq 1 ]]; then
+  kill_stack_processes
+  cleanup_runtime_state
+  echo "  [OK] Sentinel stack stopped."
+  exit 0
+fi
+
 kill_stack_processes
 sleep 2
 echo "  [OK] Process cleanup complete."
@@ -459,7 +707,7 @@ echo "  [OK] Process cleanup complete."
 echo
 echo "[2/5] Verifying environment..."
 if [[ ! -f "$ENV_FILE" ]]; then
-  echo "  [FAIL] Missing $ENV_FILE. Run deploy/bootstrap_kali_single_node.sh first."
+  echo "  [FAIL] Missing $ENV_FILE. Re-run with --force-bootstrap."
   exit 1
 fi
 
@@ -482,6 +730,10 @@ if [[ ! -x "$REPO_PATH/.venv/bin/python3" ]]; then
   echo "  [FAIL] $REPO_PATH/.venv/bin/python3 not found."
   exit 1
 fi
+
+# Ensure capture interface exists in the current WSL/network environment.
+# If the env file contains a stale interface name (e.g. eth0) the pipeline will fail hard.
+ensure_valid_capture_iface
 
 EXPLAIN_ANALYZE_SMOKE_PAYLOAD='{"timestamp":"startup-smoke","sourceIp":"127.0.0.1","packetsPerSecond":0,"bytesPerSecond":0,"threatScore":0.05,"activeFlows":1,"topProtocol":"tcp"}'
 
@@ -520,14 +772,8 @@ if ! wait_for_http_post_json \
   echo "  [WARN] Explain API did not pass /analyze within 20s."
 fi
 
-# Optional: attach TC clsact BPF on the capture interface so blacklist_map exists for kernel drops.
-# This loads proxy/sentinel_tc.o if present; safe no-op on kernels without tc/BPF support.
-if [[ -n "${SENTINEL_INTERFACE:-}" && "${SENTINEL_INTERFACE}" != "auto" ]]; then
-  if [[ -x "$REPO_PATH/scripts/attach_tc_clsact.sh" ]]; then
-    echo "  Attaching TC clsact BPF on ${SENTINEL_INTERFACE} (blacklist_map for kernel drops)..."
-    "$REPO_PATH/scripts/attach_tc_clsact.sh" "${SENTINEL_INTERFACE}" || echo "  [WARN] TC attach failed; kernel dropping may be disabled on this host."
-  fi
-fi
+# Try XDP native first; if unavailable/fails, fallback to TC clsact attach.
+attempt_xdp_then_fallback_tc
 
 echo "  Starting pipeline..."
 nohup "$REPO_PATH/sentinel_pipeline" \

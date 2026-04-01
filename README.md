@@ -44,31 +44,32 @@ This README is the canonical all-in-one operational guide. New users should be a
 
 ## Architecture
 
+GitHub renders this diagram with Mermaid. Node labels that contain colons must be quoted, or parsing fails and the diagram does not display.
+
 ```mermaid
 flowchart LR
-    A[Ingress Traffic] --> B[Sentinel Pipeline]
+  ingress[Ingress traffic] --> pipeline[Sentinel pipeline]
 
-    subgraph Linux Data Path
-        B --> C[Feature Extractor]
-        C --> D[Decision Engine]
-        D --> E{Verdict}
-        E -->|allow| F[Local Stack]
-        E -->|drop / blacklist| G[BPF Map / TC Fallback]
-        E -->|rate limit / block| H[SDN Control Actions]
-    end
+  subgraph linux_dp ["Linux datapath"]
+    pipeline --> fe[Feature extractor]
+    fe --> de[Decision engine]
+    de --> verdict{Verdict}
+    verdict -->|allow| forward[Forward locally]
+    verdict -->|drop or blacklist| bpf[BPF maps / TC clsact]
+    verdict -->|rate limit or block| sdn_cmd[SDN control actions]
+  end
 
-    subgraph Control and Observability
-        D --> I[WebSocket Server :8765]
-        I --> J[React Dashboard]
-        D --> K[Feedback Library]
-        L[Explain API :5001] --> J
-        J --> L
-    end
+  subgraph obs ["Control and observability"]
+    de --> ws["WebSocket server (8765)"]
+    ws --> dash[React dashboard]
+    de --> fb[Feedback library]
+    xapi["Explain API (5001)"] <--> dash
+  end
 
-    subgraph SDN Plane
-        H --> M[Ryu or OS-Ken Controller :8080]
-        M --> N[OpenFlow Switch / Mininet / OVS]
-    end
+  subgraph sdn ["SDN plane"]
+    sdn_cmd --> ctrl["Ryu or OS-Ken (8080)"]
+    ctrl --> sw[OpenFlow switch / Mininet / OVS]
+  end
 ```
 
 ## Repository Layout
@@ -83,6 +84,7 @@ flowchart LR
 | `feedback/` | Feedback and threshold adaptation logic |
 | `proxy/` | XDP and TC eBPF programs |
 | `frontend/` | React + Vite SOC dashboard |
+| `deploy/` | `run_sentinel_stack.sh` (unified launcher), nginx/oauth examples |
 | `scripts/` | Startup, controller, TC attach, and integration helpers |
 | `configs/` | Runtime configuration files such as reflection ports |
 
@@ -110,38 +112,26 @@ flowchart LR
 
 For external-facing deployment and internet-path DDoS validation, use these production artifacts:
 
-- `deploy/bootstrap_ubuntu22_vm.sh` for one-shot Ubuntu 22.04 VM provisioning (pipeline, API, frontend, nginx, systemd).
+- `deploy/run_sentinel_stack.sh` as the single self-healing deploy+run entrypoint (installs/builds missing artifacts, starts all services, health-checks the full stack).
 - `external_attack_guide.md` for Public IP validation, port forwarding, and WSL networking modes.
-- `deploy/bootstrap_kali_single_node.sh` plus `deploy/run_sentinel_stack.sh` for Kali single-node stack (pipeline + SDN + Redis + Nginx + Explain API + Frontend) without service-port collisions.
-- `deploy/stop_kali_single_node.sh` to cleanly stop the Kali single-node stack.
 - `scripts/bridge_mode_guide.sh` for external bridge-mode topology command sequence.
 - `scripts/test_external_flood.sh` for attacker-host flood generation during external validation.
-- `deploy/enable_xdp_native.sh` or `scripts/attach_tc_clsact.sh --xdp-native <iface>` for XDP native/driver-mode attach.
 
-Example bootstrap:
-
-```bash
-sudo bash deploy/bootstrap_ubuntu22_vm.sh \
-  --repo-path /opt/Sentinel-main \
-  --iface eth0 \
-  --ws-port 8765 \
-  --explain-port 5001 \
-  --web-port 80 \
-  --ws-api-key '<replace-with-strong-secret>'
-```
-
-Example Kali single-node bootstrap and launch:
+Unified deploy+run:
 
 ```bash
-sudo bash deploy/bootstrap_kali_single_node.sh \
+sudo bash deploy/run_sentinel_stack.sh \
   --repo-path /opt/Sentinel-main \
   --ws-port 8765 \
   --explain-port 5001 \
   --frontend-port 5200 \
-  --web-port 80 \
-  --ws-api-key '<replace-with-strong-secret>'
+  --web-port 5173
+```
 
-sudo bash deploy/run_sentinel_stack.sh --repo-path /opt/Sentinel-main
+Stop all stack components:
+
+```bash
+sudo bash deploy/run_sentinel_stack.sh --repo-path /opt/Sentinel-main --stop
 ```
 
 ## Quick Start
@@ -153,17 +143,14 @@ Use this flow for a fresh clone on Kali/Ubuntu:
 ```bash
 git clone https://github.com/<your-org-or-user>/Sentinel-main.git
 cd Sentinel-main
-chmod +x deploy/bootstrap_kali_single_node.sh deploy/run_sentinel_stack.sh deploy/stop_kali_single_node.sh
+chmod +x deploy/run_sentinel_stack.sh
 
-sudo bash deploy/bootstrap_kali_single_node.sh \
+sudo bash deploy/run_sentinel_stack.sh \
   --repo-path "$(pwd)" \
   --ws-port 8765 \
   --explain-port 5001 \
   --frontend-port 5200 \
-  --web-port 80 \
-  --ws-api-key '<replace-with-strong-secret>'
-
-sudo bash deploy/run_sentinel_stack.sh --repo-path "$(pwd)"
+  --web-port 5173
 ```
 
 Open the dashboard at `http://localhost` (or `http://localhost:<SENTINEL_WEB_PORT>` if overridden).
@@ -171,7 +158,7 @@ Open the dashboard at `http://localhost` (or `http://localhost:<SENTINEL_WEB_POR
 Stop the stack:
 
 ```bash
-sudo bash deploy/stop_kali_single_node.sh --repo-path "$(pwd)"
+sudo bash deploy/run_sentinel_stack.sh --repo-path "$(pwd)" --stop
 ```
 
 ### Option 1: Linux / Kali multi-launcher
@@ -301,6 +288,8 @@ cd frontend
 npm install
 cd ..
 ```
+
+**WSL vs Windows:** If you build the dashboard with `npm run build` or `npm run dev` inside WSL, run `npm install` in that same environment. A `node_modules` tree produced on Windows can miss Linux Rollup binaries (`@rollup/rollup-linux-x64-gnu`) and fail at build time. If that happens, from WSL run: `rm -rf frontend/node_modules frontend/package-lock.json && cd frontend && npm install`.
 
 ### Python environment for explainability
 
@@ -694,8 +683,6 @@ Suggested profile progression:
 - `progressive`: module-by-module enablement during validation
 - `full`: all integration modules enabled after quality gates are green
 
-- `full`: all integration modules enabled after quality gates are green
-
 ### Frontend endpoint overrides
 
 The frontend auto-discovers local defaults, but you can override them with Vite env vars when needed.
@@ -759,10 +746,13 @@ When the backend runs with `-w 8765`, telemetry streams include:
 - `active_connections`
 - `mitigation_status`
 - `integration_status`
+- `packet_events` (sampled packet-evidence stream with real source/destination IP text)
 
 **Commands (dashboard → pipeline):** The Settings page syncs thresholds via `set_syn_threshold`, `set_conn_threshold`, `set_pps_threshold`, `set_entropy_threshold`, and `set_contributor_threshold` (0–100; only consider IPs contributing at least that % of top-source traffic for Block top contributors; 0 = disabled). Mitigation Control supports `block_ip` (ip), `block_ip_port` (value: `ip` or `ip:port` for SDN port-level drop), `block_all_flagged`, `clear_all_blocks`, `apply_rate_limit`, and `enable_auto_mitigation` / `disable_auto_mitigation`.
 
 **Telemetry backpressure and limits:** The WebSocket server queues up to 1000 telemetry messages (`MAX_PENDING_MESSAGES`). When the queue is full, the oldest message is dropped and the new one is enqueued (drop-oldest policy); the server increments a dropped counter (no blocking). List payloads are capped so each JSON message fits in a 16 KB buffer: at most 64 entries per IP list (blocked/rate-limited/monitored/whitelisted), 32 top sources, and 64 active connections. Max concurrent clients default to 100 (configurable). Commands from the dashboard are rate-limited per client (10 per second); excess commands in the same second are dropped. The frontend reconnects with exponential backoff (up to 30 s) and keeps retrying. For high-load or many clients, expect some telemetry drops when the queue is full; the UI reflects the latest data that was sent.
+
+**Frontend update cadence:** Incoming WebSocket messages are batched and applied on `requestAnimationFrame` so high-volume streams (for example sampled `packet_events`) do not freeze the main thread. The pipeline adjusts `packet_event` sampling by observed PPS so the evidence stream stays useful without overwhelming the browser.
 
 ## Verification Checklist
 
@@ -798,6 +788,32 @@ Frontend build health:
 cd frontend
 npm run build
 ```
+
+IPv4/IPv6 packet-evidence parity check (transparent sampling):
+
+```bash
+sudo tcpdump -ni eth4 -c 100 'ip or ip6'
+```
+
+Then open the dashboard Traffic Analysis page and compare the `Packet Evidence` panel:
+
+- `src_ip`/`dst_ip` values should match canonical addresses seen by `tcpdump`
+- protocol values should align (TCP/UDP/ICMP/ICMPv6 or protocol number)
+- packet lengths should be directionally consistent
+- stream is sampled for UI stability, so packet count is expected to be lower than full `tcpdump` capture
+
+Strict UI identity check (Top Sources / Activity / Connections):
+
+```bash
+# Run while the stack is active and traffic is flowing
+sudo tcpdump -ni eth4 -c 100 'ip or ip6'
+```
+
+Expected dashboard behavior in non-simulation mode:
+
+- Top source and connection rows show canonical IPv4/IPv6 text addresses
+- Activity log source addresses are canonical IPv4/IPv6 text
+- `ipv6_hash:*` should not appear in these user-facing views
 
 Backend test target:
 

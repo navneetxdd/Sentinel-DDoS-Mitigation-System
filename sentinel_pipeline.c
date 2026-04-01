@@ -64,6 +64,10 @@
 # include "sentinel_core/sentinel_pipeline_stubs.h"
 #endif
 
+#ifndef IPPROTO_ICMPV6
+#define IPPROTO_ICMPV6 58
+#endif
+
 #include "sentinel_core/sentinel_types.h"
 #include "l1_native/feature_extractor.h"
 #include "ml_engine/decision_engine.h"
@@ -187,6 +191,98 @@ typedef struct activity_raw_s {
     double ml_reliability;
     int enforced;  /* 1 if block/rate_limit was applied, 0 if auto-mitigation disabled */
 } activity_raw_t;
+
+#define IP_IDENTITY_MAP_CAP 8192u
+#define IP_IDENTITY_PROBE 16u
+#define IP_IDENTITY_TTL_NS (180ULL * 1000000000ULL)
+typedef struct ip_identity_entry_s {
+    uint32_t key_ip;
+    uint8_t ip_family;
+    uint64_t last_seen_ns;
+    char ip_text[64];
+    uint8_t used;
+} ip_identity_entry_t;
+static ip_identity_entry_t g_ip_identity_map[IP_IDENTITY_MAP_CAP];
+
+static uint32_t ip_identity_slot(uint32_t key_ip)
+{
+    return (uint32_t)(((uint64_t)ntohl(key_ip) * 2654435761u) % IP_IDENTITY_MAP_CAP);
+}
+
+static void ip_identity_record(uint32_t key_ip, uint8_t ip_family, const char *ip_text, uint64_t now_ns)
+{
+    if (key_ip == 0 || !ip_text || ip_text[0] == '\0') return;
+    uint32_t slot = ip_identity_slot(key_ip);
+    uint32_t replace_idx = slot;
+    uint64_t oldest_seen = UINT64_MAX;
+    for (uint32_t i = 0; i < IP_IDENTITY_PROBE; i++) {
+        uint32_t idx = (slot + i) % IP_IDENTITY_MAP_CAP;
+        ip_identity_entry_t *e = &g_ip_identity_map[idx];
+        if (!e->used || e->key_ip == key_ip) {
+            e->used = 1;
+            e->key_ip = key_ip;
+            e->ip_family = ip_family;
+            e->last_seen_ns = now_ns;
+            snprintf(e->ip_text, sizeof(e->ip_text), "%s", ip_text);
+            return;
+        }
+        if (e->last_seen_ns < oldest_seen) {
+            oldest_seen = e->last_seen_ns;
+            replace_idx = idx;
+        }
+    }
+    ip_identity_entry_t *e = &g_ip_identity_map[replace_idx];
+    e->used = 1;
+    e->key_ip = key_ip;
+    e->ip_family = ip_family;
+    e->last_seen_ns = now_ns;
+    snprintf(e->ip_text, sizeof(e->ip_text), "%s", ip_text);
+}
+
+static int ip_identity_lookup(uint32_t key_ip, char *out_text, size_t out_text_sz, char *out_family, size_t out_family_sz)
+{
+    if (!out_text || out_text_sz == 0) return 0;
+    out_text[0] = '\0';
+    if (out_family && out_family_sz > 0) out_family[0] = '\0';
+    uint32_t slot = ip_identity_slot(key_ip);
+    for (uint32_t i = 0; i < IP_IDENTITY_PROBE; i++) {
+        const ip_identity_entry_t *e = &g_ip_identity_map[(slot + i) % IP_IDENTITY_MAP_CAP];
+        if (!e->used) continue;
+        if (e->key_ip == key_ip) {
+            if (e->last_seen_ns > 0) {
+                uint64_t now_ns = (uint64_t)time(NULL) * 1000000000ULL;
+                if (now_ns > e->last_seen_ns && (now_ns - e->last_seen_ns) > IP_IDENTITY_TTL_NS) {
+                    return 0;
+                }
+            }
+            snprintf(out_text, out_text_sz, "%s", e->ip_text);
+            if (out_family && out_family_sz > 0) {
+                snprintf(out_family, out_family_sz, "%s", (e->ip_family == 6) ? "ipv6" : "ipv4");
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* IPv6 keys are encoded as pseudo IPv4 in 0.x.y.z for internal flow keying. */
+static int ip_is_pseudo_ipv6_key(uint32_t ip_net_order)
+{
+    uint32_t host = ntohl(ip_net_order);
+    return ((host >> 24) == 0u) && (host != 0u);
+}
+
+static void fill_ip_identity_fallback(uint32_t ip_key, char *ip_text, size_t ip_text_sz, char *ip_family, size_t ip_family_sz)
+{
+    if (!ip_text || ip_text_sz == 0) return;
+    if (ip_is_pseudo_ipv6_key(ip_key)) {
+        if (ip_family && ip_family_sz > 0) snprintf(ip_family, ip_family_sz, "%s", "ipv6");
+        snprintf(ip_text, ip_text_sz, "%s", "unresolved_ipv6");
+        return;
+    }
+    if (ip_family && ip_family_sz > 0) snprintf(ip_family, ip_family_sz, "%s", "ipv4");
+    inet_ntop(AF_INET, &ip_key, ip_text, ip_text_sz);
+}
 
 /* Feedback thread: lockless handoff; main loop must never call futex (no mutex). */
 #define FEEDBACK_SLOTS 32
@@ -1044,6 +1140,12 @@ static inline uint32_t hash_ipv6_to_32(const uint8_t *addr16)
     return fnv1a_hash(addr16, 16);
 }
 
+/* Encode IPv6 hash into 0.x.y.z pseudo IPv4 space so UI never renders fake public IPv4s. */
+static inline uint32_t encode_ipv6_hash_pseudo_ipv4(uint32_t h)
+{
+    return htonl(h & 0x00FFFFFFu);
+}
+
 /* TUN/Tailscale/wg deliver IPv4/IPv6 without an Ethernet header; L2 capture uses 802.3 framing. */
 static int g_capture_is_l3 = 0;
 
@@ -1141,6 +1243,22 @@ static int parse_raw_packet(const char *frame_data, uint32_t len, fe_packet_t *p
             ether_type = ntohs(eth->ether_type);
             ip_start = frame_data + sizeof(struct ether_header);
             ip_len = len - (uint32_t)sizeof(struct ether_header);
+            if (ether_type != ETHERTYPE_IP && ether_type != ETHERTYPE_IPV6) {
+                /* WSL/raw fallback: some kernels can deliver L3 payloads on AF_PACKET paths.
+                 * If the frame starts with a valid IP version nibble, treat it as L3 directly. */
+                uint8_t ip_ver = ((const uint8_t *)frame_data)[0] >> 4;
+                if (ip_ver == 4) {
+                    if (len < (uint32_t)sizeof(struct iphdr)) return -1;
+                    ether_type = ETHERTYPE_IP;
+                    ip_start = frame_data;
+                    ip_len = len;
+                } else if (ip_ver == 6) {
+                    if (len < 40u) return -1;
+                    ether_type = ETHERTYPE_IPV6;
+                    ip_start = frame_data;
+                    ip_len = len;
+                }
+            }
         }
     }
 
@@ -1154,6 +1272,11 @@ static int parse_raw_packet(const char *frame_data, uint32_t len, fe_packet_t *p
 
         pkt->src_ip = iph->saddr;
         pkt->dst_ip = iph->daddr;
+        pkt->ip_family = 4;
+        if (!inet_ntop(AF_INET, &iph->saddr, pkt->src_ip_text, sizeof(pkt->src_ip_text)))
+            pkt->src_ip_text[0] = '\0';
+        if (!inet_ntop(AF_INET, &iph->daddr, pkt->dst_ip_text, sizeof(pkt->dst_ip_text)))
+            pkt->dst_ip_text[0] = '\0';
         pkt->protocol = iph->protocol;
         pkt->ttl = iph->ttl;
         {
@@ -1192,8 +1315,13 @@ static int parse_raw_packet(const char *frame_data, uint32_t len, fe_packet_t *p
         /* Skip IPv6 extension headers before L4 parsing. */
         if (ip_len < 40) return -1;
         const uint8_t *ip6 = (const uint8_t *)ip_start;
-        pkt->src_ip = hash_ipv6_to_32(ip6 + 8);
-        pkt->dst_ip = hash_ipv6_to_32(ip6 + 24);
+        pkt->src_ip = encode_ipv6_hash_pseudo_ipv4(hash_ipv6_to_32(ip6 + 8));
+        pkt->dst_ip = encode_ipv6_hash_pseudo_ipv4(hash_ipv6_to_32(ip6 + 24));
+        pkt->ip_family = 6;
+        if (!inet_ntop(AF_INET6, ip6 + 8, pkt->src_ip_text, sizeof(pkt->src_ip_text)))
+            pkt->src_ip_text[0] = '\0';
+        if (!inet_ntop(AF_INET6, ip6 + 24, pkt->dst_ip_text, sizeof(pkt->dst_ip_text)))
+            pkt->dst_ip_text[0] = '\0';
         pkt->ttl    = ip6[7];
 
         uint8_t next_hdr = ip6[6];
@@ -2006,15 +2134,19 @@ static void pipeline_apply_sim_traffic_overlay(int mode, ws_metrics_t *wm, ws_tr
         tr->tcp_pps = 700000;
         tr->udp_pps = 40000;
         tr->icmp_pps = 5000;
+        tr->icmpv6_pps = 0;
         tr->other_pps = 5000;
         pd->tcp_percent = 93.0;
         pd->udp_percent = 5.3;
         pd->icmp_percent = 0.7;
+        pd->icmpv6_percent = 0.0;
         pd->other_percent = 1.0;
         pd->tcp_bytes = tr->tcp_pps * 600ULL;
         pd->udp_bytes = tr->udp_pps * 200ULL;
         pd->icmp_bytes = tr->icmp_pps * 64ULL;
+        pd->icmpv6_bytes = 0;
         pd->other_bytes = tr->other_pps * 128ULL;
+        pd->other_top_proto = 0;
     } else if (mode == 1) {
         wm->packets_per_sec = 120000;
         wm->bytes_per_sec = 90000000ULL;
@@ -2026,15 +2158,19 @@ static void pipeline_apply_sim_traffic_overlay(int mode, ws_metrics_t *wm, ws_tr
         tr->tcp_pps = 70000;
         tr->udp_pps = 45000;
         tr->icmp_pps = 2000;
+        tr->icmpv6_pps = 0;
         tr->other_pps = 3000;
         pd->tcp_percent = 58.0;
         pd->udp_percent = 37.5;
         pd->icmp_percent = 2.0;
+        pd->icmpv6_percent = 0.0;
         pd->other_percent = 2.5;
         pd->tcp_bytes = tr->tcp_pps * 1500ULL;
         pd->udp_bytes = tr->udp_pps * 512ULL;
         pd->icmp_bytes = tr->icmp_pps * 64ULL;
+        pd->icmpv6_bytes = 0;
         pd->other_bytes = tr->other_pps * 256ULL;
+        pd->other_top_proto = 0;
     }
 }
 
@@ -2266,6 +2402,8 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
             ws_activity_t wa;
             wa.timestamp_ns = (uint64_t)time(NULL) * 1000000000ULL;
             wa.src_ip = pipeline_sim_src_ip_ipv4();
+            snprintf(wa.ip_family, sizeof(wa.ip_family), "%s", "ipv4");
+            inet_ntop(AF_INET, &wa.src_ip, wa.src_ip_text, sizeof(wa.src_ip_text));
             wa.threat_score = 0.92;
             wa.enforced = 0;
             snprintf(wa.action, sizeof(wa.action), "DETECTED");
@@ -2287,6 +2425,8 @@ static void ws_pipeline_cmd_handler(const char *cmd, const char *arg,
             wa.src_ip = pipeline_sim_src_ip_ipv4();
             if (wa.src_ip == htonl(0xC0A80101))
                 wa.src_ip = htonl(0xC0A80102); /* distinguish flash crowd default IP */
+            snprintf(wa.ip_family, sizeof(wa.ip_family), "%s", "ipv4");
+            inet_ntop(AF_INET, &wa.src_ip, wa.src_ip_text, sizeof(wa.src_ip_text));
             wa.threat_score = 0.45;
             wa.enforced = 0;
             snprintf(wa.action, sizeof(wa.action), "MONITOR");
@@ -2732,15 +2872,19 @@ int main(int argc, char **argv)
     _Atomic double chi_square_sum_10s = 0.0;
     _Atomic double fanin_sum_10s = 0.0;
     _Atomic double signature_sum_10s = 0.0;
-    _Atomic uint32_t threat_count_10s = 0;
+    _Atomic double baseline_threat_sum_10s = 0.0;
+    _Atomic uint32_t classified_count_10s = 0;
+    _Atomic uint32_t ml_activated_10s = 0;
 
     activity_raw_t activity_ring[ACTIVITY_RING_SIZE];
     uint32_t activity_ring_head = 0;  /* next write */
     uint32_t activity_ring_tail = 0;   /* next read (drain in 1s block) */
 
-    _Atomic uint64_t period_tcp_pkts = 0, period_udp_pkts = 0, period_icmp_pkts = 0, period_other_pkts = 0;
-    _Atomic uint64_t period_tcp_bytes = 0, period_udp_bytes = 0, period_icmp_bytes = 0, period_other_bytes = 0;
+    _Atomic uint64_t period_tcp_pkts = 0, period_udp_pkts = 0, period_icmp_pkts = 0, period_icmpv6_pkts = 0, period_other_pkts = 0;
+    _Atomic uint64_t period_tcp_bytes = 0, period_udp_bytes = 0, period_icmp_bytes = 0, period_icmpv6_bytes = 0, period_other_bytes = 0;
+    uint64_t period_proto_bytes[256] = {0};
     _Atomic uint64_t period_bytes_total = 0;
+    uint32_t packet_event_sample_rate = 16;
 
     memset(blocked_ips, 0, sizeof(blocked_ips));
     memset(rate_limited_ips, 0, sizeof(rate_limited_ips));
@@ -2806,26 +2950,54 @@ int main(int argc, char **argv)
             }
 
             ws_traffic_rate_t tr;
-            tr.total_pps = period_tcp_pkts + period_udp_pkts + period_icmp_pkts + period_other_pkts;
+            tr.total_pps = period_tcp_pkts + period_udp_pkts + period_icmp_pkts + period_icmpv6_pkts + period_other_pkts;
             tr.total_bps = period_bytes_total * 8;
             tr.tcp_pps = period_tcp_pkts;
             tr.udp_pps = period_udp_pkts;
             tr.icmp_pps = period_icmp_pkts;
+            tr.icmpv6_pps = period_icmpv6_pkts;
             tr.other_pps = period_other_pkts;
+
+            {
+                uint64_t pps = tr.total_pps;
+                if      (pps > 10000) packet_event_sample_rate = 1024;
+                else if (pps > 5000)  packet_event_sample_rate = 512;
+                else if (pps > 1000)  packet_event_sample_rate = 128;
+                else if (pps > 100)   packet_event_sample_rate = 32;
+                else                  packet_event_sample_rate = 16;
+            }
 
             uint64_t total_p = tr.total_pps;
             ws_protocol_dist_t pd;
             pd.tcp_bytes = period_tcp_bytes;
             pd.udp_bytes = period_udp_bytes;
             pd.icmp_bytes = period_icmp_bytes;
+            pd.icmpv6_bytes = period_icmpv6_bytes;
             pd.other_bytes = period_other_bytes;
+            pd.other_top_proto = 0;
             if (total_p > 0) {
                 pd.tcp_percent = 100.0 * (double)period_tcp_pkts / total_p;
                 pd.udp_percent = 100.0 * (double)period_udp_pkts / total_p;
                 pd.icmp_percent = 100.0 * (double)period_icmp_pkts / total_p;
+                pd.icmpv6_percent = 100.0 * (double)period_icmpv6_pkts / total_p;
                 pd.other_percent = 100.0 * (double)period_other_pkts / total_p;
             } else {
-                pd.tcp_percent = pd.udp_percent = pd.icmp_percent = pd.other_percent = 0.0;
+                pd.tcp_percent = pd.udp_percent = pd.icmp_percent = pd.icmpv6_percent = pd.other_percent = 0.0;
+            }
+
+            if (pd.other_bytes > 0) {
+                uint64_t best_bytes = 0;
+                uint8_t best_proto = 0;
+                for (uint32_t p = 0; p < 256; p++) {
+                    if (p == IPPROTO_TCP || p == IPPROTO_UDP || p == IPPROTO_ICMP || p == IPPROTO_ICMPV6) {
+                        continue;
+                    }
+                    if (period_proto_bytes[p] > best_bytes) {
+                        best_bytes = period_proto_bytes[p];
+                        best_proto = (uint8_t)p;
+                    }
+                }
+                pd.other_top_proto = best_proto;
             }
 
             {
@@ -2843,17 +3015,26 @@ int main(int argc, char **argv)
                 fe_top_flow_t top_flows[10];
                 ws_connection_t conns[10];
                 uint32_t nc = fe_get_top_flows(fe, top_flows, 10);
-                for (uint32_t i = 0; i < nc; i++) {
-                    conns[i].src_ip = top_flows[i].key.src_ip;
-                    conns[i].dst_ip = top_flows[i].key.dst_ip;
-                    conns[i].src_port = top_flows[i].key.src_port;
-                    conns[i].dst_port = top_flows[i].key.dst_port;
-                    conns[i].protocol = top_flows[i].key.protocol;
-                    conns[i].packets = top_flows[i].packets;
-                    conns[i].bytes = top_flows[i].bytes;
-                    conns[i].last_seen_ns = top_flows[i].last_seen_ns;
+                uint32_t out_conn = 0;
+                for (uint32_t i = 0; i < nc && out_conn < 10; i++) {
+                    if (top_flows[i].src_ip_text[0] == '\0' || top_flows[i].dst_ip_text[0] == '\0')
+                        continue; /* Real-address-only display: skip unresolved identities. */
+                    if (strcmp(top_flows[i].src_ip_text, "::") == 0 || strcmp(top_flows[i].dst_ip_text, "::") == 0)
+                        continue; /* Suppress unspecified IPv6 address from connection table. */
+                    conns[out_conn].src_ip = top_flows[i].key.src_ip;
+                    conns[out_conn].dst_ip = top_flows[i].key.dst_ip;
+                    snprintf(conns[out_conn].ip_family, sizeof(conns[out_conn].ip_family), "%s", (top_flows[i].ip_family == 6) ? "ipv6" : "ipv4");
+                    snprintf(conns[out_conn].src_ip_text, sizeof(conns[out_conn].src_ip_text), "%s", top_flows[i].src_ip_text);
+                    snprintf(conns[out_conn].dst_ip_text, sizeof(conns[out_conn].dst_ip_text), "%s", top_flows[i].dst_ip_text);
+                    conns[out_conn].src_port = top_flows[i].key.src_port;
+                    conns[out_conn].dst_port = top_flows[i].key.dst_port;
+                    conns[out_conn].protocol = top_flows[i].key.protocol;
+                    conns[out_conn].packets = top_flows[i].packets;
+                    conns[out_conn].bytes = top_flows[i].bytes;
+                    conns[out_conn].last_seen_ns = top_flows[i].last_seen_ns;
+                    out_conn++;
                 }
-                ws_update_connections(ws, conns, nc);
+                ws_update_connections(ws, conns, out_conn);
             }
 
             ws_mitigation_status_t ms;
@@ -2971,6 +3152,9 @@ int main(int argc, char **argv)
                 uint32_t monitored_start = (total_monitored >= TELEM_IP_MAX) ? monitored_head : 0;
                 for (uint32_t i = 0; i < blocked_count; i++) {
                     blocked_ordered[i] = blocked_ips[(blocked_start + i) % TELEM_IP_MAX];
+                    if (!ip_identity_lookup(blocked_ordered[i].ip, blocked_ordered[i].ip_text, sizeof(blocked_ordered[i].ip_text), blocked_ordered[i].ip_family, sizeof(blocked_ordered[i].ip_family))) {
+                        fill_ip_identity_fallback(blocked_ordered[i].ip, blocked_ordered[i].ip_text, sizeof(blocked_ordered[i].ip_text), blocked_ordered[i].ip_family, sizeof(blocked_ordered[i].ip_family));
+                    }
                 }
                 uint32_t rl_out = 0;
                 for (uint32_t i = 0; i < rate_limited_count && rl_out < TELEM_IP_MAX; i++) {
@@ -2979,11 +3163,24 @@ int main(int argc, char **argv)
                     for (int j = 0; j < g_cleared_rate_limit_count; j++) {
                         if (g_cleared_rate_limits[j] == e.ip) { cleared = 1; break; }
                     }
-                    if (!cleared) rate_limited_ordered[rl_out++] = e;
+                    if (!cleared) {
+                        if (!ip_identity_lookup(e.ip, e.ip_text, sizeof(e.ip_text), e.ip_family, sizeof(e.ip_family))) {
+                            fill_ip_identity_fallback(e.ip, e.ip_text, sizeof(e.ip_text), e.ip_family, sizeof(e.ip_family));
+                        }
+                        rate_limited_ordered[rl_out++] = e;
+                    }
                 }
                 rate_limited_count = rl_out;
                 for (uint32_t i = 0; i < monitored_count; i++) {
                     monitored_ordered[i] = monitored_ips[(monitored_start + i) % TELEM_IP_MAX];
+                    if (!ip_identity_lookup(monitored_ordered[i].ip, monitored_ordered[i].ip_text, sizeof(monitored_ordered[i].ip_text), monitored_ordered[i].ip_family, sizeof(monitored_ordered[i].ip_family))) {
+                        fill_ip_identity_fallback(monitored_ordered[i].ip, monitored_ordered[i].ip_text, sizeof(monitored_ordered[i].ip_text), monitored_ordered[i].ip_family, sizeof(monitored_ordered[i].ip_family));
+                    }
+                }
+                for (uint32_t i = 0; i < whitelist_count; i++) {
+                    if (!ip_identity_lookup(whitelisted_ips[i].ip, whitelisted_ips[i].ip_text, sizeof(whitelisted_ips[i].ip_text), whitelisted_ips[i].ip_family, sizeof(whitelisted_ips[i].ip_family))) {
+                        fill_ip_identity_fallback(whitelisted_ips[i].ip, whitelisted_ips[i].ip_text, sizeof(whitelisted_ips[i].ip_text), whitelisted_ips[i].ip_family, sizeof(whitelisted_ips[i].ip_family));
+                    }
                 }
                 ws_update_blocked_ips(ws, blocked_ordered, blocked_count);
                 ws_update_rate_limited_ips(ws, rate_limited_ordered, rate_limited_count);
@@ -3001,6 +3198,9 @@ int main(int argc, char **argv)
                 ws_activity_t wa;
                 wa.timestamp_ns = ar->timestamp_ns;
                 wa.src_ip = ar->src_ip;
+                if (!ip_identity_lookup(ar->src_ip, wa.src_ip_text, sizeof(wa.src_ip_text), wa.ip_family, sizeof(wa.ip_family))) {
+                    fill_ip_identity_fallback(ar->src_ip, wa.src_ip_text, sizeof(wa.src_ip_text), wa.ip_family, sizeof(wa.ip_family));
+                }
                 wa.threat_score = ar->threat_score;
                 wa.enforced = ar->enforced;
                 snprintf(wa.action, sizeof(wa.action), "%s", verdict_to_action(ar->verdict));
@@ -3026,8 +3226,9 @@ int main(int argc, char **argv)
             last_metrics = now;
             classifications_this_sec = 0;
             skipped_classifications_this_sec = 0;
-            period_tcp_pkts = period_udp_pkts = period_icmp_pkts = period_other_pkts = 0;
-            period_tcp_bytes = period_udp_bytes = period_icmp_bytes = period_other_bytes = 0;
+            period_tcp_pkts = period_udp_pkts = period_icmp_pkts = period_icmpv6_pkts = period_other_pkts = 0;
+            period_tcp_bytes = period_udp_bytes = period_icmp_bytes = period_icmpv6_bytes = period_other_bytes = 0;
+            memset(period_proto_bytes, 0, sizeof(period_proto_bytes));
             period_bytes_total = 0;
         }
 
@@ -3056,8 +3257,9 @@ int main(int argc, char **argv)
             last_metrics = now;
             classifications_this_sec = 0;
             skipped_classifications_this_sec = 0;
-            period_tcp_pkts = period_udp_pkts = period_icmp_pkts = period_other_pkts = 0;
-            period_tcp_bytes = period_udp_bytes = period_icmp_bytes = period_other_bytes = 0;
+            period_tcp_pkts = period_udp_pkts = period_icmp_pkts = period_icmpv6_pkts = period_other_pkts = 0;
+            period_tcp_bytes = period_udp_bytes = period_icmp_bytes = period_icmpv6_bytes = period_other_bytes = 0;
+            memset(period_proto_bytes, 0, sizeof(period_proto_bytes));
             period_bytes_total = 0;
         }
 
@@ -3070,6 +3272,8 @@ int main(int argc, char **argv)
                 ws_top[0].src_ip = pipeline_sim_src_ip_ipv4();
                 if (sim_mode_ts == 1 && ws_top[0].src_ip == htonl(0xC0A80101))
                     ws_top[0].src_ip = htonl(0xC0A80102);
+                snprintf(ws_top[0].ip_family, sizeof(ws_top[0].ip_family), "%s", "ipv4");
+                inet_ntop(AF_INET, &ws_top[0].src_ip, ws_top[0].src_ip_text, sizeof(ws_top[0].src_ip_text));
                 if (sim_mode_ts == 2) {
                     ws_top[0].packets = 5000000ULL;
                     ws_top[0].bytes = 3200000000ULL;
@@ -3102,6 +3306,12 @@ int main(int argc, char **argv)
                                 continue;
                         }
                         ws_top[out].src_ip = top[k].src_ip;
+                        snprintf(ws_top[out].ip_family, sizeof(ws_top[out].ip_family), "%s", (top[k].ip_family == 6) ? "ipv6" : "ipv4");
+                        snprintf(ws_top[out].src_ip_text, sizeof(ws_top[out].src_ip_text), "%s", top[k].src_ip_text);
+                        if (ws_top[out].src_ip_text[0] == '\0')
+                            continue; /* Real-address-only display: skip unresolved identities. */
+                        if (strcmp(ws_top[out].src_ip_text, "::") == 0)
+                            continue; /* Suppress unspecified IPv6 address from top sources. */
                         ws_top[out].packets = top[k].packets;
                         ws_top[out].bytes = top[k].bytes;
                         ws_top[out].flow_count = top[k].flow_count;
@@ -3138,43 +3348,49 @@ int main(int argc, char **argv)
                 wi.anomaly_weight = dt->weight_anomaly;
                 wi.chi_square_weight = dt->weight_chi_square;
                 wi.fanin_weight = dt->weight_fanin;
-                wi.avg_threat_score = (threat_count_10s > 0)
-                    ? (threat_sum_10s / (double)threat_count_10s)
+                wi.avg_threat_score = (classified_count_10s > 0)
+                    ? (threat_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_fanin_score = (threat_count_10s > 0)
-                    ? (fanin_sum_10s / (double)threat_count_10s)
+                wi.avg_fanin_score = (classified_count_10s > 0)
+                    ? (fanin_sum_10s / (double)classified_count_10s)
                     : 0.0;
                 wi.signature_weight = dt->weight_signature;
-                wi.avg_signature_score = (threat_count_10s > 0)
-                    ? (signature_sum_10s / (double)threat_count_10s)
+                wi.avg_signature_score = (classified_count_10s > 0)
+                    ? (signature_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_volume = (threat_count_10s > 0)
-                    ? (volume_sum_10s / (double)threat_count_10s)
+                wi.avg_score_volume = (classified_count_10s > 0)
+                    ? (volume_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_entropy = (threat_count_10s > 0)
-                    ? (entropy_sum_10s / (double)threat_count_10s)
+                wi.avg_score_entropy = (classified_count_10s > 0)
+                    ? (entropy_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_protocol = (threat_count_10s > 0)
-                    ? (protocol_sum_10s / (double)threat_count_10s)
+                wi.avg_score_protocol = (classified_count_10s > 0)
+                    ? (protocol_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_behavioral = (threat_count_10s > 0)
-                    ? (behavioral_sum_10s / (double)threat_count_10s)
+                wi.avg_score_behavioral = (classified_count_10s > 0)
+                    ? (behavioral_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_ml = (threat_count_10s > 0)
-                    ? (ml_sum_10s / (double)threat_count_10s)
+                wi.avg_score_ml = (classified_count_10s > 0)
+                    ? (ml_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_l7 = (threat_count_10s > 0)
-                    ? (l7_sum_10s / (double)threat_count_10s)
+                wi.avg_score_l7 = (classified_count_10s > 0)
+                    ? (l7_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_anomaly = (threat_count_10s > 0)
-                    ? (anomaly_sum_10s / (double)threat_count_10s)
+                wi.avg_score_anomaly = (classified_count_10s > 0)
+                    ? (anomaly_sum_10s / (double)classified_count_10s)
                     : 0.0;
-                wi.avg_score_chi_square = (threat_count_10s > 0)
-                    ? (chi_square_sum_10s / (double)threat_count_10s)
+                wi.avg_score_chi_square = (classified_count_10s > 0)
+                    ? (chi_square_sum_10s / (double)classified_count_10s)
                     : 0.0;
                 wi.avg_score_fanin = wi.avg_fanin_score;
                 wi.avg_score_signature = wi.avg_signature_score;
+                wi.avg_baseline_threat_score = (classified_count_10s > 0)
+                    ? (baseline_threat_sum_10s / (double)classified_count_10s)
+                    : 0.0;
+                wi.ml_activation_threshold = 0.15;
                 wi.detections_last_10s = detections_10s;
+                wi.classifications_last_10s = classified_count_10s;
+                wi.ml_activated_last_10s = ml_activated_10s;
                 wi.policy_arm = ps.active_arm;
                 wi.policy_updates = ps.update_count;
                 wi.policy_last_reward = ps.last_reward;
@@ -3254,7 +3470,9 @@ int main(int argc, char **argv)
             chi_square_sum_10s = 0.0;
             fanin_sum_10s = 0.0;
             signature_sum_10s = 0.0;
-            threat_count_10s = 0;
+            baseline_threat_sum_10s = 0.0;
+            classified_count_10s = 0;
+            ml_activated_10s = 0;
             last_feature_importance = now;
         }
 
@@ -3322,12 +3540,31 @@ int main(int argc, char **argv)
             } else if (fe_pkt.protocol == IPPROTO_ICMP) {
                 atomic_fetch_add_explicit(&period_icmp_pkts, 1, memory_order_relaxed);
                 atomic_fetch_add_explicit(&period_icmp_bytes, len, memory_order_relaxed);
+            } else if (fe_pkt.protocol == IPPROTO_ICMPV6) {
+                atomic_fetch_add_explicit(&period_icmpv6_pkts, 1, memory_order_relaxed);
+                atomic_fetch_add_explicit(&period_icmpv6_bytes, len, memory_order_relaxed);
             } else {
                 atomic_fetch_add_explicit(&period_other_pkts, 1, memory_order_relaxed);
                 atomic_fetch_add_explicit(&period_other_bytes, len, memory_order_relaxed);
             }
+            period_proto_bytes[fe_pkt.protocol] += (uint64_t)len;
             atomic_fetch_add_explicit(&period_bytes_total, len, memory_order_relaxed);
 
+            ip_identity_record(fe_pkt.src_ip, fe_pkt.ip_family, fe_pkt.src_ip_text, coarse_now_ns);
+            ip_identity_record(fe_pkt.dst_ip, fe_pkt.ip_family, fe_pkt.dst_ip_text, coarse_now_ns);
+            if (ws && (rx_packets % packet_event_sample_rate) == 0u) {
+                ws_packet_event_t pe;
+                memset(&pe, 0, sizeof(pe));
+                pe.timestamp_ns = coarse_now_ns;
+                snprintf(pe.ip_family, sizeof(pe.ip_family), "%s", (fe_pkt.ip_family == 6) ? "ipv6" : "ipv4");
+                snprintf(pe.src_ip_text, sizeof(pe.src_ip_text), "%s", fe_pkt.src_ip_text);
+                snprintf(pe.dst_ip_text, sizeof(pe.dst_ip_text), "%s", fe_pkt.dst_ip_text);
+                pe.protocol = fe_pkt.protocol;
+                pe.src_port = fe_pkt.src_port;
+                pe.dst_port = fe_pkt.dst_port;
+                pe.packet_len = len;
+                ws_push_packet_event(ws, &pe);
+            }
             fe_ingest_packet(fe, &fe_pkt);
 
             sentinel_feature_vector_t fv;
@@ -3354,7 +3591,10 @@ int main(int argc, char **argv)
                     chi_square_sum_10s += assessment.score_chi_square;
                     fanin_sum_10s += assessment.score_fanin;
                     signature_sum_10s += assessment.score_signature;
-                    threat_count_10s++;
+                    baseline_threat_sum_10s += assessment.baseline_threat_score;
+                    classified_count_10s++;
+                    if (assessment.ml_activated)
+                        ml_activated_10s++;
                     if (assessment.verdict != VERDICT_ALLOW) {
                         detections_10s++;
                         int enforcing = atomic_load_explicit(&g_shared_state->auto_mitigation_enabled, memory_order_acquire);
@@ -3469,12 +3709,31 @@ int main(int argc, char **argv)
                 } else if (fe_pkt.protocol == IPPROTO_ICMP) {
                     atomic_fetch_add_explicit(&period_icmp_pkts, 1, memory_order_relaxed);
                     atomic_fetch_add_explicit(&period_icmp_bytes, len, memory_order_relaxed);
+                } else if (fe_pkt.protocol == IPPROTO_ICMPV6) {
+                    atomic_fetch_add_explicit(&period_icmpv6_pkts, 1, memory_order_relaxed);
+                    atomic_fetch_add_explicit(&period_icmpv6_bytes, len, memory_order_relaxed);
                 } else {
                     atomic_fetch_add_explicit(&period_other_pkts, 1, memory_order_relaxed);
                     atomic_fetch_add_explicit(&period_other_bytes, len, memory_order_relaxed);
                 }
+                period_proto_bytes[fe_pkt.protocol] += (uint64_t)len;
                 atomic_fetch_add_explicit(&period_bytes_total, (uint64_t)len, memory_order_relaxed);
 
+                ip_identity_record(fe_pkt.src_ip, fe_pkt.ip_family, fe_pkt.src_ip_text, coarse_now_ns);
+                ip_identity_record(fe_pkt.dst_ip, fe_pkt.ip_family, fe_pkt.dst_ip_text, coarse_now_ns);
+                if (ws && (rx_packets % packet_event_sample_rate) == 0u) {
+                    ws_packet_event_t pe;
+                    memset(&pe, 0, sizeof(pe));
+                    pe.timestamp_ns = coarse_now_ns;
+                    snprintf(pe.ip_family, sizeof(pe.ip_family), "%s", (fe_pkt.ip_family == 6) ? "ipv6" : "ipv4");
+                    snprintf(pe.src_ip_text, sizeof(pe.src_ip_text), "%s", fe_pkt.src_ip_text);
+                    snprintf(pe.dst_ip_text, sizeof(pe.dst_ip_text), "%s", fe_pkt.dst_ip_text);
+                    pe.protocol = fe_pkt.protocol;
+                    pe.src_port = fe_pkt.src_port;
+                    pe.dst_port = fe_pkt.dst_port;
+                    pe.packet_len = len;
+                    ws_push_packet_event(ws, &pe);
+                }
                 fe_ingest_packet(fe, &fe_pkt);
 
                 sentinel_feature_vector_t fv;
@@ -3501,7 +3760,10 @@ int main(int argc, char **argv)
                         chi_square_sum_10s += assessment.score_chi_square;
                         fanin_sum_10s += assessment.score_fanin;
                         signature_sum_10s += assessment.score_signature;
-                        threat_count_10s++;
+                        baseline_threat_sum_10s += assessment.baseline_threat_score;
+                        classified_count_10s++;
+                        if (assessment.ml_activated)
+                            ml_activated_10s++;
                         if (assessment.verdict != VERDICT_ALLOW) {
                             detections_10s++;
                             int enforcing = atomic_load_explicit(&g_shared_state->auto_mitigation_enabled, memory_order_acquire);

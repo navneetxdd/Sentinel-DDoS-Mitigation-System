@@ -751,11 +751,11 @@ static double score_entropy(de_context_t *ctx,
     }
 
     /* Low src_port_entropy: many packets from same port -> flood */
-    if (f->packet_count > 20 && f->src_port_entropy < dyn_thresh) {
+    if (f->packet_count > 5 && f->src_port_entropy < dyn_thresh) {
         score += 0.4;
     }
     /* Low dst_port_entropy: single destination port -> targeted flood */
-    if (f->packet_count > 20 && f->dst_port_entropy < dyn_thresh) {
+    if (f->packet_count > 5 && f->dst_port_entropy < dyn_thresh) {
         score += 0.2;
     }
     /* High payload entropy: randomised attack payloads */
@@ -801,8 +801,8 @@ static double score_chi_square(de_context_t *ctx,
     }
     ctx->global_pps_obs++;
 
-    /* Warmup: need at least 20 samples to establish a stable global baseline. */
-    if (ctx->global_pps_obs < 20) return 0.0;
+    /* Warmup: need at least 8 samples to establish a stable global baseline. */
+    if (ctx->global_pps_obs < 8) return 0.0;
 
     double expected = ctx->global_pps_ewma;
     if (expected < 1.0) return 0.0;
@@ -1242,8 +1242,8 @@ int de_classify(de_context_t *ctx,
 
     /* ML activation gate: only apply ML if:
      * 1. model_extension_enabled is true (flag was set)
-     * 2. baseline threat score >= 0.30 (threshold crossed) */
-    int ml_should_activate = (model_extension_enabled == 1) && (pre_ml_threat >= 0.30);
+     * 2. baseline threat score >= 0.15 (aligned with score_allow_max) */
+    int ml_should_activate = (model_extension_enabled == 1) && (pre_ml_threat >= 0.15);
 
     double obs_mean = ((double)bl->observations_pps + (double)bl->observations_bps) * 0.5;
     double obs_factor = clamp01(obs_mean / 10.0);
@@ -1356,6 +1356,8 @@ int de_classify(de_context_t *ctx,
     out->score_chi_square  = s_chi;
     out->score_fanin       = s_fanin;
     out->ml_reliability    = ml_score.reliability;
+    out->baseline_threat_score = pre_ml_threat;
+    out->ml_activated      = ml_should_activate ? 1 : 0;
     out->threat_score     = threat;
     out->confidence       = confidence;
 

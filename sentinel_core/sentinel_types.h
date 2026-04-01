@@ -180,6 +180,8 @@ typedef struct sentinel_threat_assessment {
     double   score_fanin;           /* distributed fan-in concentration score [0,1] */
     double   score_signature;       /* signature-match component [0,1] */
     double   ml_reliability;        /* how much the runtime trusted the ML score */
+    double   baseline_threat_score; /* pre-ML baseline score used for ML activation gate */
+    int      ml_activated;          /* 1 if ML gate was crossed for this assessment */
 
     /* --- timing --- */
     uint64_t assessment_time_ns;    /* wall-clock time of assessment */

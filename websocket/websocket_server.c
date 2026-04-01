@@ -80,7 +80,8 @@ typedef enum {
     WS_MSG_TYPE_CONNECTIONS,
     WS_MSG_TYPE_MITIGATION_STATUS,
     WS_MSG_TYPE_INTEGRATION_STATUS,
-    WS_MSG_TYPE_COMMAND_RESULT
+    WS_MSG_TYPE_COMMAND_RESULT,
+    WS_MSG_TYPE_PACKET_EVENT
 } ws_msg_type_t;
 
 #define MAX_IP_LIST_BATCH 128
@@ -115,6 +116,7 @@ typedef struct ws_raw_msg {
         ws_mitigation_status_t mitigation_status;
         ws_integration_status_t integration_status;
         ws_command_result_t command_result;
+        ws_packet_event_t packet_event;
     } data;
 } ws_raw_msg_t;
 
@@ -170,6 +172,25 @@ static void ws_set_nonblocking(int fd)
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags != -1)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void ws_format_ip_identifier(uint32_t ip_be, char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0) return;
+    {
+        uint32_t host = ntohl(ip_be);
+        /* Sentinel encodes IPv6-hash pseudo addresses into 0.x.y.z for UI safety. */
+        if ((host >> 24) == 0) {
+            snprintf(out, out_sz, "ipv6_hash:%06x", host & 0x00FFFFFFu);
+            return;
+        }
+    }
+    {
+        struct in_addr addr = { .s_addr = ip_be };
+        if (!inet_ntop(AF_INET, &addr, out, out_sz)) {
+            snprintf(out, out_sz, "0.0.0.0");
+        }
+    }
 }
 
 /* SHA-1 for WebSocket handshake using OpenSSL */
@@ -740,16 +761,21 @@ flush_phase:
                 }
                 case WS_MSG_TYPE_ACTIVITY: {
                     ws_activity_t *a = &raw_msg.data.activity;
-                    char ip[INET_ADDRSTRLEN];
-                    struct in_addr addr = { .s_addr = a->src_ip };
-                    inet_ntop(AF_INET, &addr, ip, sizeof(ip));
+                    char ip[64];
+                    const char *ip_family = (a->ip_family[0] != '\0') ? a->ip_family : "ipv4";
+                    if (a->src_ip_text[0] != '\0') {
+                        snprintf(ip, sizeof(ip), "%s", a->src_ip_text);
+                    } else {
+                        if (strcmp(ip_family, "ipv6") == 0) snprintf(ip, sizeof(ip), "%s", "unresolved_ipv6");
+                        else ws_format_ip_identifier(a->src_ip, ip, sizeof(ip));
+                    }
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"schema_version\":%u,\"type\":\"activity_logs\",\"data\":{"
                         "\"timestamp\":%lu,\"src_ip\":\"%s\",\"action\":\"%s\","
-                        "\"attack_type\":\"%s\",\"threat_score\":%.3f,\"reason\":\"%s\",\"enforced\":%s}}",
+                        "\"ip_family\":\"%s\",\"attack_type\":\"%s\",\"threat_score\":%.3f,\"reason\":\"%s\",\"enforced\":%s}}",
                         (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         (unsigned long)(a->timestamp_ns / 1000000000ULL),
-                        ip, a->action, a->attack_type, a->threat_score, a->reason, a->enforced ? "true" : "false");
+                        ip, a->action, ip_family, a->attack_type, a->threat_score, a->reason, a->enforced ? "true" : "false");
                     break;
                 }
                 case WS_MSG_TYPE_IP_LIST_BLOCKED:
@@ -768,22 +794,27 @@ flush_phase:
                     if (ip_cap > (uint32_t)WS_MAX_JSON_IP_ENTRIES) ip_cap = (uint32_t)WS_MAX_JSON_IP_ENTRIES;
                     for (uint32_t i = 0; i < ip_cap; i++) {
                         ws_ip_entry_t *e = &raw_msg.data.ip_list.entries[i];
-                        char ip[INET_ADDRSTRLEN];
-                        struct in_addr addr = { .s_addr = e->ip };
-                        inet_ntop(AF_INET, &addr, ip, sizeof(ip));
+                        char ip[64];
+                        if (e->ip_text[0] != '\0') {
+                            snprintf(ip, sizeof(ip), "%s", e->ip_text);
+                        } else if (strcmp(e->ip_family, "ipv6") == 0) {
+                            snprintf(ip, sizeof(ip), "%s", "unresolved_ipv6");
+                        } else {
+                            ws_format_ip_identifier(e->ip, ip, sizeof(ip));
+                        }
                         int append_rc;
                         if (raw_msg.type == WS_MSG_TYPE_IP_LIST_RATE_LIMITED) {
                             append_rc = json_append(buf_local, sizeof(buf_local), &used,
-                                "%s{\"ip\":\"%s\",\"limit_pps\":%u,\"rule_id\":%u}",
-                                i > 0 ? "," : "", ip, e->rate_limit_pps, e->rule_id);
+                                "%s{\"ip\":\"%s\",\"ip_family\":\"%s\",\"limit_pps\":%u,\"rule_id\":%u}",
+                                i > 0 ? "," : "", ip, (e->ip_family[0] ? e->ip_family : "ipv4"), e->rate_limit_pps, e->rule_id);
                         } else if (raw_msg.type == WS_MSG_TYPE_IP_LIST_WHITELISTED) {
                             append_rc = json_append(buf_local, sizeof(buf_local), &used,
-                                "%s{\"ip\":\"%s\"}",
-                                i > 0 ? "," : "", ip);
+                                "%s{\"ip\":\"%s\",\"ip_family\":\"%s\"}",
+                                i > 0 ? "," : "", ip, (e->ip_family[0] ? e->ip_family : "ipv4"));
                         } else {
                             append_rc = json_append(buf_local, sizeof(buf_local), &used,
-                                "%s{\"ip\":\"%s\",\"rule_id\":%u,\"timestamp\":%lu}",
-                                i > 0 ? "," : "", ip, e->rule_id,
+                                "%s{\"ip\":\"%s\",\"ip_family\":\"%s\",\"rule_id\":%u,\"timestamp\":%lu}",
+                                i > 0 ? "," : "", ip, (e->ip_family[0] ? e->ip_family : "ipv4"), e->rule_id,
                                 (unsigned long)(e->timestamp_added / 1000000000ULL));
                         }
                         if (append_rc != 0) break;
@@ -799,21 +830,25 @@ flush_phase:
                     ws_traffic_rate_t *r = &raw_msg.data.traffic_rate;
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"schema_version\":%u,\"type\":\"traffic_rate\",\"data\":{"
-                        "\"total_pps\":%lu,\"total_bps\":%lu,\"tcp_pps\":%lu,\"udp_pps\":%lu,\"icmp_pps\":%lu,\"other_pps\":%lu}}",
+                        "\"total_pps\":%lu,\"total_bps\":%lu,\"tcp_pps\":%lu,\"udp_pps\":%lu,\"icmp_pps\":%lu,\"icmpv6_pps\":%lu,\"other_pps\":%lu}}",
                         (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         (unsigned long)r->total_pps, (unsigned long)r->total_bps, (unsigned long)r->tcp_pps,
-                        (unsigned long)r->udp_pps, (unsigned long)r->icmp_pps, (unsigned long)r->other_pps);
+                        (unsigned long)r->udp_pps, (unsigned long)r->icmp_pps,
+                        (unsigned long)r->icmpv6_pps, (unsigned long)r->other_pps);
                     break;
                 }
                 case WS_MSG_TYPE_PROTOCOL_DIST: {
                     ws_protocol_dist_t *d = &raw_msg.data.protocol_dist;
                     n_json = snprintf(buf_local, sizeof(buf_local),
                         "{\"schema_version\":%u,\"type\":\"protocol_distribution\",\"data\":{"
-                        "\"tcp_percent\":%.2f,\"udp_percent\":%.2f,\"icmp_percent\":%.2f,\"other_percent\":%.2f,"
-                        "\"tcp_bytes\":%lu,\"udp_bytes\":%lu,\"icmp_bytes\":%lu,\"other_bytes\":%lu}}",
+                        "\"tcp_percent\":%.2f,\"udp_percent\":%.2f,\"icmp_percent\":%.2f,\"icmpv6_percent\":%.2f,\"other_percent\":%.2f,"
+                        "\"tcp_bytes\":%lu,\"udp_bytes\":%lu,\"icmp_bytes\":%lu,\"icmpv6_bytes\":%lu,\"other_bytes\":%lu,"
+                        "\"other_top_proto\":%u}}",
                         (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
-                        d->tcp_percent, d->udp_percent, d->icmp_percent, d->other_percent,
-                        (unsigned long)d->tcp_bytes, (unsigned long)d->udp_bytes, (unsigned long)d->icmp_bytes, (unsigned long)d->other_bytes);
+                        d->tcp_percent, d->udp_percent, d->icmp_percent, d->icmpv6_percent, d->other_percent,
+                        (unsigned long)d->tcp_bytes, (unsigned long)d->udp_bytes, (unsigned long)d->icmp_bytes,
+                        (unsigned long)d->icmpv6_bytes, (unsigned long)d->other_bytes,
+                        (unsigned)d->other_top_proto);
                     break;
                 }
                 case WS_MSG_TYPE_TOP_SOURCES: {
@@ -826,12 +861,17 @@ flush_phase:
                     if (top_cap > (uint32_t)WS_MAX_JSON_TOP_SOURCES) top_cap = (uint32_t)WS_MAX_JSON_TOP_SOURCES;
                     for (uint32_t i = 0; i < top_cap; i++) {
                         ws_top_source_t *s = &raw_msg.data.top_sources.sources[i];
-                        char ip[INET_ADDRSTRLEN];
-                        struct in_addr addr = { .s_addr = s->src_ip };
-                        inet_ntop(AF_INET, &addr, ip, sizeof(ip));
+                        char ip[64];
+                        const char *ip_family = (s->ip_family[0] != '\0') ? s->ip_family : "ipv4";
+                        if (s->src_ip_text[0] != '\0') {
+                            snprintf(ip, sizeof(ip), "%s", s->src_ip_text);
+                        } else {
+                            if (strcmp(ip_family, "ipv6") == 0) snprintf(ip, sizeof(ip), "%s", "unresolved_ipv6");
+                            else ws_format_ip_identifier(s->src_ip, ip, sizeof(ip));
+                        }
                         if (json_append(buf_local, sizeof(buf_local), &used,
-                            "%s{\"ip\":\"%s\",\"packets\":%lu,\"bytes\":%lu,\"flows\":%u,\"suspicious\":%d,\"threat_score\":%.3f}",
-                            i > 0 ? "," : "", ip, (unsigned long)s->packets, (unsigned long)s->bytes,
+                            "%s{\"ip\":\"%s\",\"ip_family\":\"%s\",\"packets\":%lu,\"bytes\":%lu,\"flows\":%u,\"suspicious\":%d,\"threat_score\":%.3f}",
+                            i > 0 ? "," : "", ip, ip_family, (unsigned long)s->packets, (unsigned long)s->bytes,
                             s->flow_count, s->suspicious, s->threat_score) != 0) {
                             break;
                         }
@@ -852,8 +892,9 @@ flush_phase:
                         "\"signature_weight\":%.3f,\"avg_threat_score\":%.3f,\"avg_fanin_score\":%.3f,\"avg_signature_score\":%.3f,"
                         "\"avg_score_volume\":%.3f,\"avg_score_entropy\":%.3f,\"avg_score_protocol\":%.3f,\"avg_score_behavioral\":%.3f,"
                         "\"avg_score_ml\":%.3f,\"avg_score_l7\":%.3f,\"avg_score_anomaly\":%.3f,\"avg_score_chi_square\":%.3f,"
-                        "\"avg_score_fanin\":%.3f,\"avg_score_signature\":%.3f,"
-                        "\"detections_last_10s\":%u,"
+                        "\"avg_score_fanin\":%.3f,\"avg_score_signature\":%.3f,\"avg_baseline_threat_score\":%.3f,"
+                        "\"ml_activation_threshold\":%.3f,\"detections_last_10s\":%u,\"classifications_last_10s\":%u,"
+                        "\"ml_activated_last_10s\":%u,"
                         "\"policy_arm\":%u,\"policy_updates\":%lu,\"policy_last_reward\":%.3f}}",
                         (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
                         f->volume_weight, f->entropy_weight, f->protocol_weight, f->behavioral_weight,
@@ -861,8 +902,9 @@ flush_phase:
                         f->signature_weight, f->avg_threat_score, f->avg_fanin_score, f->avg_signature_score,
                         f->avg_score_volume, f->avg_score_entropy, f->avg_score_protocol, f->avg_score_behavioral,
                         f->avg_score_ml, f->avg_score_l7, f->avg_score_anomaly, f->avg_score_chi_square,
-                        f->avg_score_fanin, f->avg_score_signature,
-                        f->detections_last_10s,
+                        f->avg_score_fanin, f->avg_score_signature, f->avg_baseline_threat_score,
+                        f->ml_activation_threshold, f->detections_last_10s, f->classifications_last_10s,
+                        f->ml_activated_last_10s,
                         f->policy_arm, (unsigned long)f->policy_updates, f->policy_last_reward);
                     break;
                 }
@@ -889,15 +931,18 @@ flush_phase:
                     if (conn_cap > (uint32_t)WS_MAX_JSON_CONNECTIONS) conn_cap = (uint32_t)WS_MAX_JSON_CONNECTIONS;
                     for (uint32_t i = 0; i < conn_cap; i++) {
                         ws_connection_t *c = &raw_msg.data.connections.conns[i];
-                        char sip[INET_ADDRSTRLEN], dip[INET_ADDRSTRLEN];
-                        struct in_addr sa = { .s_addr = c->src_ip };
-                        struct in_addr da = { .s_addr = c->dst_ip };
-                        inet_ntop(AF_INET, &sa, sip, sizeof(sip));
-                        inet_ntop(AF_INET, &da, dip, sizeof(dip));
+                        char sip[64], dip[64];
+                        const char *ip_family = (c->ip_family[0] != '\0') ? c->ip_family : "ipv4";
+                        if (c->src_ip_text[0] != '\0') snprintf(sip, sizeof(sip), "%s", c->src_ip_text);
+                        else if (strcmp(ip_family, "ipv6") == 0) snprintf(sip, sizeof(sip), "%s", "unresolved_ipv6");
+                        else ws_format_ip_identifier(c->src_ip, sip, sizeof(sip));
+                        if (c->dst_ip_text[0] != '\0') snprintf(dip, sizeof(dip), "%s", c->dst_ip_text);
+                        else if (strcmp(ip_family, "ipv6") == 0) snprintf(dip, sizeof(dip), "%s", "unresolved_ipv6");
+                        else ws_format_ip_identifier(c->dst_ip, dip, sizeof(dip));
                         if (json_append(buf_local, sizeof(buf_local), &used,
-                            "%s{\"src\":\"%s:%u\",\"dst\":\"%s:%u\",\"proto\":%u,\"packets\":%lu,\"bytes\":%lu}",
+                            "%s{\"src\":\"%s:%u\",\"dst\":\"%s:%u\",\"ip_family\":\"%s\",\"proto\":%u,\"packets\":%lu,\"bytes\":%lu}",
                             i > 0 ? "," : "", sip, ntohs(c->src_port), dip, ntohs(c->dst_port),
-                            c->protocol, (unsigned long)c->packets, (unsigned long)c->bytes) != 0) {
+                            ip_family, c->protocol, (unsigned long)c->packets, (unsigned long)c->bytes) != 0) {
                             break;
                         }
                     }
@@ -964,6 +1009,23 @@ flush_phase:
                         cmd_esc,
                         r->success ? "true" : "false",
                         msg_esc);
+                    break;
+                }
+                case WS_MSG_TYPE_PACKET_EVENT: {
+                    ws_packet_event_t *p = &raw_msg.data.packet_event;
+                    n_json = snprintf(buf_local, sizeof(buf_local),
+                        "{\"schema_version\":%u,\"type\":\"packet_events\",\"data\":{"
+                        "\"timestamp\":%lu,\"ip_family\":\"%s\",\"src_ip\":\"%s\",\"dst_ip\":\"%s\","
+                        "\"protocol\":%u,\"src_port\":%u,\"dst_port\":%u,\"packet_len\":%u}}",
+                        (unsigned)WS_TELEMETRY_SCHEMA_VERSION,
+                        (unsigned long)(p->timestamp_ns / 1000000000ULL),
+                        p->ip_family,
+                        p->src_ip_text,
+                        p->dst_ip_text,
+                        (unsigned)p->protocol,
+                        (unsigned)ntohs(p->src_port),
+                        (unsigned)ntohs(p->dst_port),
+                        (unsigned)p->packet_len);
                     break;
                 }
                 default: break;
@@ -1208,6 +1270,13 @@ void ws_push_command_result(ws_context_t *ctx, const ws_command_result_t *result
 {
     if (!ctx || !result) return;
     ws_raw_msg_t msg = { .type = WS_MSG_TYPE_COMMAND_RESULT, .data.command_result = *result };
+    ws_queue_raw(ctx, &msg);
+}
+
+void ws_push_packet_event(ws_context_t *ctx, const ws_packet_event_t *event)
+{
+    if (!ctx || !event) return;
+    ws_raw_msg_t msg = { .type = WS_MSG_TYPE_PACKET_EVENT, .data.packet_event = *event };
     ws_queue_raw(ctx, &msg);
 }
 

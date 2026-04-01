@@ -67,6 +67,9 @@ typedef struct pkt_record {
 
 typedef struct flow_entry {
     sentinel_flow_key_t key;
+    uint8_t  ip_family;
+    char     src_ip_text[64];
+    char     dst_ip_text[64];
 
     /* ring in global slab (index = pool index); keeps flow_entry < 256B for cache. */
     uint32_t      ring_slot;      /* index into ctx->ring_slab [ring_slot * MAX_RING_SIZE .. ] */
@@ -111,6 +114,7 @@ typedef struct flow_entry {
     /* O(1) source aggregation: list of flows belonging to same source (no full-table scan). */
     struct flow_entry *next_for_source;
     struct flow_entry *prev_for_source;
+    struct source_entry *source_owner;
     /* Slot index into ctx->flow_slots for O(1) unlink on source evict (no ghost flows). */
     uint32_t slot_index;
 } __attribute__((aligned(64))) flow_entry_t;
@@ -123,6 +127,8 @@ typedef struct flow_entry {
 
 typedef struct source_entry {
     uint32_t src_ip;
+    uint8_t  ip_family;
+    char     src_ip_text[64];
     uint32_t total_flows;
     uint64_t total_packets;
     uint64_t total_bytes;
@@ -670,6 +676,8 @@ static void evict_weakest_in_bucket(fe_context_t *ctx, uint32_t bucket)
 
 static source_entry_t *find_or_create_source(fe_context_t *ctx,
                                               uint32_t src_ip,
+                                              uint8_t ip_family,
+                                              const char *src_ip_text,
                                               uint32_t preferred_hash,
                                               int *is_new)
 {
@@ -680,7 +688,12 @@ static source_entry_t *find_or_create_source(fe_context_t *ctx,
     uint32_t step = 0;
 
     while (s && step < MAX_SOURCE_CHAIN) {
-        if (s->src_ip == src_ip) { *is_new = 0; return s; }
+        if (s->src_ip == src_ip &&
+            s->ip_family == ip_family &&
+            strncmp(s->src_ip_text, src_ip_text ? src_ip_text : "", sizeof(s->src_ip_text)) == 0) {
+            *is_new = 0;
+            return s;
+        }
         prev = &s->next;
         s = s->next;
         step++;
@@ -710,6 +723,8 @@ static source_entry_t *find_or_create_source(fe_context_t *ctx,
         return NULL;
     }
     s->src_ip = src_ip;
+    s->ip_family = ip_family;
+    snprintf(s->src_ip_text, sizeof(s->src_ip_text), "%s", src_ip_text ? src_ip_text : "");
     s->source_flow_list = NULL;
     s->next = ctx->src_buckets[bucket];
     ctx->src_buckets[bucket] = s;
@@ -766,7 +781,8 @@ static dst_entry_t *find_dst(fe_context_t *ctx, uint32_t dst_ip)
 /* Unlink flow from its source's list (O(1) with prev). Call before evicting. */
 static void unlink_flow_from_source(fe_context_t *ctx, flow_entry_t *f)
 {
-    source_entry_t *src = find_source(ctx, f->key.src_ip);
+    (void)ctx;
+    source_entry_t *src = f->source_owner;
     if (!src) return;
     if (f->prev_for_source)
         f->prev_for_source->next_for_source = f->next_for_source;
@@ -775,6 +791,7 @@ static void unlink_flow_from_source(fe_context_t *ctx, flow_entry_t *f)
     if (f->next_for_source)
         f->next_for_source->prev_for_source = f->prev_for_source;
     f->next_for_source = f->prev_for_source = NULL;
+    f->source_owner = NULL;
     if (src->total_flows > 0) src->total_flows--;
 }
 
@@ -815,6 +832,9 @@ int fe_ingest_packet(fe_context_t *ctx, const fe_packet_t *pkt)
     int is_new_flow = 0;
     flow_entry_t *f = find_or_create_flow(ctx, &key, h, &is_new_flow);
     if (!f) return -1;
+    f->ip_family = pkt->ip_family;
+    snprintf(f->src_ip_text, sizeof(f->src_ip_text), "%s", pkt->src_ip_text);
+    snprintf(f->dst_ip_text, sizeof(f->dst_ip_text), "%s", pkt->dst_ip_text);
 
     /* Bitmap liveness: mark the bucket where this flow lives (linear probing may place in different bucket). */
     {
@@ -828,8 +848,9 @@ int fe_ingest_packet(fe_context_t *ctx, const fe_packet_t *pkt)
 
     /* update source aggregate */
     int is_new_src = 0;
-    source_entry_t *src = find_or_create_source(ctx, pkt->src_ip, 0, &is_new_src);
+    source_entry_t *src = find_or_create_source(ctx, pkt->src_ip, pkt->ip_family, pkt->src_ip_text, 0, &is_new_src);
     if (src) {
+        if (!f->source_owner) f->source_owner = src;
         if (is_new_flow) {
             src->total_flows++;
             /* O(1) telemetry: link flow into source list so fe_extract_source only walks this list. */
@@ -837,6 +858,7 @@ int fe_ingest_packet(fe_context_t *ctx, const fe_packet_t *pkt)
             f->prev_for_source = NULL;
             if (src->source_flow_list) src->source_flow_list->prev_for_source = f;
             src->source_flow_list = f;
+            f->source_owner = src;
         }
         src->total_packets++;
         src->total_bytes += pkt->payload_len;
@@ -1398,13 +1420,25 @@ uint32_t fe_get_top_sources(fe_context_t *ctx, fe_top_source_t *out, uint32_t ma
 {
     if (!ctx || !out || max_count == 0) return 0;
 
+    uint64_t lookback_ns = (uint64_t)ctx->cfg.window_sec * NS_PER_SEC;
+    if (lookback_ns < 15000000000ULL) lookback_ns = 15000000000ULL; /* minimum 15s live window */
+    uint64_t cutoff_ns = 0;
+    if (ctx->recent_max_timestamp_ns > lookback_ns)
+        cutoff_ns = ctx->recent_max_timestamp_ns - lookback_ns;
+
     uint32_t n = 0;
     /* Use 'out' as the heap storage directly. */
     for (uint32_t i = 0; i < ctx->src_bucket_count; i++) {
         source_entry_t *s = ctx->src_buckets[i];
         while (s) {
+            if (cutoff_ns > 0 && s->last_seen_ns < cutoff_ns) {
+                s = s->next;
+                continue;
+            }
             if (n < max_count) {
                 out[n].src_ip     = s->src_ip;
+                out[n].ip_family  = s->ip_family;
+                snprintf(out[n].src_ip_text, sizeof(out[n].src_ip_text), "%s", s->src_ip_text);
                 out[n].packets    = s->total_packets;
                 out[n].bytes      = s->total_bytes;
                 out[n].flow_count = s->total_flows;
@@ -1417,6 +1451,8 @@ uint32_t fe_get_top_sources(fe_context_t *ctx, fe_top_source_t *out, uint32_t ma
             } else if (s->total_packets > out[0].packets) {
                 /* Replace root (smallest of the top N) and bubble down. */
                 out[0].src_ip     = s->src_ip;
+                out[0].ip_family  = s->ip_family;
+                snprintf(out[0].src_ip_text, sizeof(out[0].src_ip_text), "%s", s->src_ip_text);
                 out[0].packets    = s->total_packets;
                 out[0].bytes      = s->total_bytes;
                 out[0].flow_count = s->total_flows;
@@ -1465,13 +1501,23 @@ uint32_t fe_get_top_flows(fe_context_t *ctx, fe_top_flow_t *out, uint32_t max_co
 {
     if (!ctx || !out || max_count == 0) return 0;
 
+    uint64_t lookback_ns = (uint64_t)ctx->cfg.window_sec * NS_PER_SEC;
+    if (lookback_ns < 15000000000ULL) lookback_ns = 15000000000ULL; /* minimum 15s live window */
+    uint64_t cutoff_ns = 0;
+    if (ctx->recent_max_timestamp_ns > lookback_ns)
+        cutoff_ns = ctx->recent_max_timestamp_ns - lookback_ns;
+
     uint32_t n = 0;
     for (uint32_t i = 0; i < ctx->flow_slots_cap; i++) {
         flow_entry_t *f = ctx->flow_slots[i];
         if (!f || f == FLOW_SLOT_DELETED) continue;
+        if (cutoff_ns > 0 && f->last_timestamp_ns < cutoff_ns) continue;
 
         if (n < max_count) {
             out[n].key = f->key;
+            out[n].ip_family = f->ip_family;
+            snprintf(out[n].src_ip_text, sizeof(out[n].src_ip_text), "%s", f->src_ip_text);
+            snprintf(out[n].dst_ip_text, sizeof(out[n].dst_ip_text), "%s", f->dst_ip_text);
             out[n].packets = f->total_packets;
             out[n].bytes = f->total_bytes;
             out[n].last_seen_ns = f->last_timestamp_ns;
@@ -1482,6 +1528,9 @@ uint32_t fe_get_top_flows(fe_context_t *ctx, fe_top_flow_t *out, uint32_t max_co
             }
         } else if (f->total_packets > out[0].packets) {
             out[0].key = f->key;
+            out[0].ip_family = f->ip_family;
+            snprintf(out[0].src_ip_text, sizeof(out[0].src_ip_text), "%s", f->src_ip_text);
+            snprintf(out[0].dst_ip_text, sizeof(out[0].dst_ip_text), "%s", f->dst_ip_text);
             out[0].packets = f->total_packets;
             out[0].bytes = f->total_bytes;
             out[0].last_seen_ns = f->last_timestamp_ns;

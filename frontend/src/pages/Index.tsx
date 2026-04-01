@@ -6,7 +6,6 @@ import { RiskGauge } from "@/components/dashboard/RiskGauge";
 import { RiskScoreBreakdown } from "@/components/dashboard/RiskScoreBreakdown";
 import { TrafficChart } from "@/components/dashboard/TrafficChart";
 import { AIAnalystWidget } from "@/components/dashboard/AIAnalystWidget";
-import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
 import { DefendedHostWidget } from "@/components/dashboard/DefendedHostWidget";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
@@ -38,7 +37,7 @@ const Index = () => {
   const runtimeAccuracy = runtimeModel?.test_metrics?.accuracy;
 
   /* Real data from backend streams - NEVER mock */
-  const pps = ws.metrics?.packets_per_sec ?? 0;
+  const pps = ws.trafficRate?.total_pps ?? ws.metrics?.packets_per_sec ?? 0;
   const flows = ws.metrics?.active_flows ?? 0;
   const threatScore = ws.featureImportance?.avg_threat_score ?? 0;
   const faninScore = ws.featureImportance?.avg_fanin_score ?? 0;
@@ -51,6 +50,11 @@ const Index = () => {
   const cpuPercent = ws.metrics?.cpu_usage_percent ?? 0;
   const memMB = ws.metrics?.memory_usage_mb ?? 0;
   const mlOps = ws.metrics?.ml_classifications_per_sec ?? 0;
+  const baselineThreatScore = ws.featureImportance?.avg_baseline_threat_score ?? 0;
+  const mlActivationThreshold = ws.featureImportance?.ml_activation_threshold ?? 0.3;
+  const classificationsLast10s = ws.featureImportance?.classifications_last_10s ?? 0;
+  const mlActivatedLast10s = ws.featureImportance?.ml_activated_last_10s ?? 0;
+  const mlGateOpen = mlActivatedLast10s > 0;
 
   const getStatus = (): StatusType => {
     if (riskScore >= 70) return "attack";
@@ -58,16 +62,19 @@ const Index = () => {
     return "normal";
   };
 
-  const currentProtocols = ws.metrics?.protocol_distribution || {};
-  let topProtocol = "Unknown";
-  let maxProtoRate = -1;
-  for (const [proto, count] of Object.entries(currentProtocols)) {
-    const c = count as number;
-    if (c > maxProtoRate) {
-      maxProtoRate = c;
-      topProtocol = proto;
-    }
-  }
+  const pd = ws.protocolDist;
+  const topProtocol = (() => {
+    if (!pd) return "Unknown";
+    const entries: [string, number][] = [
+      ["TCP", pd.tcp_percent],
+      ["UDP", pd.udp_percent],
+      ["ICMP", pd.icmp_percent],
+    ];
+    if (pd.icmpv6_percent != null) entries.push(["ICMPv6", pd.icmpv6_percent]);
+    if (pd.other_percent > 0) entries.push(["Other", pd.other_percent]);
+    const best = entries.reduce((a, b) => (b[1] > a[1] ? b : a), entries[0]);
+    return best[1] > 0 ? best[0] : "Unknown";
+  })();
 
   const formatPps = (value: number): string => {
     if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
@@ -79,7 +86,7 @@ const Index = () => {
     timestamp: new Date().toISOString(),
     sourceIp: primaryAttackerIp,
     packetsPerSecond: pps,
-    bytesPerSecond: ws.metrics?.bytes_per_sec ?? 0,
+    bytesPerSecond: ws.trafficRate?.total_bps ?? ws.metrics?.bytes_per_sec ?? 0,
     threatScore: threatScore,
     activeFlows: flows,
     topProtocol,
@@ -99,6 +106,41 @@ const Index = () => {
             </div>
           }
         />
+
+        <Panel
+          title="Detection Mode"
+          description="Baseline threshold gate for ML activation"
+          variant={mlGateOpen ? "highlight" : "default"}
+        >
+          <div className="rounded-lg border border-border/60 bg-secondary/10 px-4 py-3 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Current mode:</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-semibold ${mlGateOpen ? "bg-status-warning/15 text-status-warning" : "bg-status-success/15 text-status-success"}`}>
+                  {mlGateOpen ? "ML Active" : "Baseline Only"}
+                </span>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {mlGateOpen ? "ML turns on after baseline threshold is crossed." : "Baseline threshold not crossed yet."}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm">
+              <div className="rounded border border-border/40 px-3 py-2">
+                <span className="text-xs text-muted-foreground">Baseline score</span>
+                <div className="font-mono">{baselineThreatScore.toFixed(3)}</div>
+              </div>
+              <div className="rounded border border-border/40 px-3 py-2">
+                <span className="text-xs text-muted-foreground">ML activation threshold</span>
+                <div className="font-mono">{mlActivationThreshold.toFixed(2)}</div>
+              </div>
+              <div className="rounded border border-border/40 px-3 py-2">
+                <span className="text-xs text-muted-foreground">ML-used classifications (last 10 sec)</span>
+                <div className="font-mono">{mlActivatedLast10s} / {classificationsLast10s}</div>
+              </div>
+            </div>
+          </div>
+        </Panel>
 
         {/* Primary KPI Grid - 4 Columns */}
         <GridLayout cols={4} gap="md">
@@ -174,21 +216,13 @@ const Index = () => {
           }}
         />
 
-        {/* Threat Intelligence Section - 2 Columns */}
+        {/* Threat Intelligence Section - Single ordered connection list */}
         <Panel
           title="Threat Intelligence"
-          description="Real-time traffic analysis with ML-powered threat scoring"
+          description="All active connections ordered by packet volume (highest first)"
           variant="default"
         >
-          <GridLayout cols={2} gap="lg">
-            <TopIPsTable
-              isAttack={riskScore >= 70}
-              sources={ws.topSources}
-              blockedIPs={ws.blockedIPs}
-              rateLimitedIPs={ws.rateLimitedIPs}
-            />
-            <ActiveConnectionsTable connections={ws.connections} />
-          </GridLayout>
+          <ActiveConnectionsTable connections={ws.connections} />
         </Panel>
 
         {/* System Health Grid - 6 Columns */}
@@ -203,10 +237,10 @@ const Index = () => {
             />
             <StatCard
               label="ML Engine"
-              value={mlOps > 0 ? `${mlOps.toLocaleString()}` : "Online"}
-              unit={mlOps > 0 ? "ops/s" : ""}
+              value={mlOps > 0 ? "Active" : "Idle"}
+              unit={`${mlOps.toLocaleString()} ops/s`}
               icon={<Server className="w-5 h-5" />}
-              variant={mlOps > 0 ? "success" : "default"}
+              variant={mlOps > 0 ? "success" : "warning"}
             />
             <StatCard
               label="Distributed Threat Evidence"
@@ -238,7 +272,7 @@ const Index = () => {
             <StatCard
               label="ML Model"
               value={benchmarks.report?.runtime_model ?? "Unknown"}
-              unit={typeof runtimeAccuracy === "number" ? `${(runtimeAccuracy * 100).toFixed(1)}%` : ""}
+              unit={typeof runtimeAccuracy === "number" ? `${(runtimeAccuracy * 100).toFixed(1)}% runtime accuracy` : "runtime selection"}
               icon={<Server className="w-5 h-5" />}
               variant="success"
             />

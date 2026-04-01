@@ -16,6 +16,7 @@
  *  12. mitigation_status (1s)   - Mitigation summary
  *  13. integration_status (1s)  - External integration flags/profile
  *  14. command_result (event)    - Browser command ACK/error status
+ *  15. packet_events (sampled)   - Packet-level observability stream
  *
  * Also accepts JSON commands from clients (browser -> pipeline).
  * Uses a lightweight built-in WebSocket implementation.
@@ -73,6 +74,8 @@ typedef struct ws_metrics {
 typedef struct ws_activity {
     uint64_t timestamp_ns;
     uint32_t src_ip;
+    char     src_ip_text[64];      /* canonical IPv4/IPv6 text when available */
+    char     ip_family[8];         /* "ipv4" or "ipv6" */
     char     action[16];           /* BLOCK/RATE_LIMIT/MONITOR/WHITELIST */
     char     attack_type[32];
     double   threat_score;
@@ -83,6 +86,8 @@ typedef struct ws_activity {
 /* Stream 3-6: IP Lists */
 typedef struct ws_ip_entry {
     uint32_t ip;
+    char     ip_text[64];          /* canonical IPv4/IPv6 text when available */
+    char     ip_family[8];         /* "ipv4" or "ipv6" */
     uint64_t timestamp_added;
     uint32_t rule_id;              /* For blocked/rate_limited */
     uint32_t rate_limit_pps;       /* For rate_limited only */
@@ -95,6 +100,7 @@ typedef struct ws_traffic_rate {
     uint64_t tcp_pps;
     uint64_t udp_pps;
     uint64_t icmp_pps;
+    uint64_t icmpv6_pps;
     uint64_t other_pps;
 } ws_traffic_rate_t;
 
@@ -103,16 +109,21 @@ typedef struct ws_protocol_dist {
     double tcp_percent;
     double udp_percent;
     double icmp_percent;
+    double icmpv6_percent;
     double other_percent;
     uint64_t tcp_bytes;
     uint64_t udp_bytes;
     uint64_t icmp_bytes;
+    uint64_t icmpv6_bytes;
     uint64_t other_bytes;
+    uint8_t  other_top_proto;   /* Most common protocol number inside "other" by byte volume */
 } ws_protocol_dist_t;
 
 /* Stream 9: Top Source */
 typedef struct ws_top_source {
     uint32_t src_ip;
+    char     src_ip_text[64];      /* canonical IPv4/IPv6 text when available */
+    char     ip_family[8];         /* "ipv4" or "ipv6" */
     uint64_t packets;
     uint64_t bytes;
     uint32_t flow_count;
@@ -152,7 +163,11 @@ typedef struct ws_feature_importance {
     double avg_score_chi_square;
     double avg_score_fanin;
     double avg_score_signature;
+    double avg_baseline_threat_score;
+    double ml_activation_threshold;
     uint32_t detections_last_10s;
+    uint32_t classifications_last_10s;
+    uint32_t ml_activated_last_10s;
     uint32_t policy_arm;
     uint64_t policy_updates;
     double   policy_last_reward;
@@ -162,6 +177,9 @@ typedef struct ws_feature_importance {
 typedef struct ws_connection {
     uint32_t src_ip;
     uint32_t dst_ip;
+    char     src_ip_text[64];      /* canonical IPv4/IPv6 text when available */
+    char     dst_ip_text[64];      /* canonical IPv4/IPv6 text when available */
+    char     ip_family[8];         /* "ipv4" or "ipv6" */
     uint16_t src_port;
     uint16_t dst_port;
     uint8_t  protocol;
@@ -215,6 +233,18 @@ typedef struct ws_command_result {
     char     message[WS_COMMAND_MESSAGE_MAX];
 } ws_command_result_t;
 
+/* Stream 15: Packet evidence event (sampled to avoid overwhelming UI path) */
+typedef struct ws_packet_event {
+    uint64_t timestamp_ns;
+    char     ip_family[8];         /* "ipv4" or "ipv6" */
+    char     src_ip_text[64];
+    char     dst_ip_text[64];
+    uint8_t  protocol;
+    uint16_t src_port;
+    uint16_t dst_port;
+    uint32_t packet_len;
+} ws_packet_event_t;
+
 /* ============================================================================
  * OPAQUE HANDLE
  * ============================================================================ */
@@ -249,6 +279,7 @@ void ws_update_connections(ws_context_t *ctx, const ws_connection_t *conns, uint
 void ws_update_mitigation_status(ws_context_t *ctx, const ws_mitigation_status_t *status);
 void ws_update_integration_status(ws_context_t *ctx, const ws_integration_status_t *status);
 void ws_push_command_result(ws_context_t *ctx, const ws_command_result_t *result);
+void ws_push_packet_event(ws_context_t *ctx, const ws_packet_event_t *event);
 
 /* ============================================================================
  * COMMAND CALLBACK (browser -> pipeline)

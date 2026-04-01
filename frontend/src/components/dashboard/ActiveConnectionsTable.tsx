@@ -14,6 +14,11 @@ const protoName = (n: number) => {
 };
 
 export function ActiveConnectionsTable({ className, connections = [] }: ActiveConnectionsTableProps) {
+  const orderedConnections = [...connections].sort((a, b) => {
+    if (b.packets !== a.packets) return b.packets - a.packets;
+    return b.bytes - a.bytes;
+  });
+
   return (
     <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="mb-4">
@@ -21,7 +26,7 @@ export function ActiveConnectionsTable({ className, connections = [] }: ActiveCo
         <p className="text-xs text-muted-foreground">Top flows by packet count</p>
       </div>
       <div className="overflow-x-auto max-h-48 overflow-y-auto">
-        {connections.length > 0 ? (
+        {orderedConnections.length > 0 ? (
           <table className="w-full text-sm" role="table" aria-label="Active connections">
             <thead>
               <tr className="border-b border-border">
@@ -33,7 +38,7 @@ export function ActiveConnectionsTable({ className, connections = [] }: ActiveCo
               </tr>
             </thead>
             <tbody>
-              {connections.slice(0, 20).map((conn, idx) => (
+              {orderedConnections.map((conn, idx) => (
                 <tr key={idx} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
                   <td className="py-2 font-mono text-xs">{conn.src}</td>
                   <td className="py-2 font-mono text-xs">{conn.dst}</td>

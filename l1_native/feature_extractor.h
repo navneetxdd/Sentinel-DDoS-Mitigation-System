@@ -73,6 +73,9 @@ typedef struct fe_packet {
     uint32_t hw_hash;          /* Reserved; core uses software FNV-1a only (hash parity). */
     double   sig_boost;        /* threat boost from signature match (0.0 .. 1.0) */
     const uint8_t *payload;    /* first N bytes, may be NULL */
+    uint8_t  ip_family;        /* 4 = IPv4, 6 = IPv6 */
+    char     src_ip_text[64];  /* canonical text for observability */
+    char     dst_ip_text[64];  /* canonical text for observability */
 } fe_packet_t;
 
 /* TCP flag bits (standard) */
@@ -128,6 +131,8 @@ uint32_t fe_active_sources(const fe_context_t *ctx);
  *  out must hold at least max_count entries. Returns number filled (0..max_count). */
 typedef struct fe_top_source {
     uint32_t src_ip;
+    uint8_t  ip_family;       /* 4 = IPv4, 6 = IPv6 */
+    char     src_ip_text[64]; /* canonical text for telemetry display */
     uint64_t packets;
     uint64_t bytes;
     uint32_t flow_count;
@@ -138,6 +143,9 @@ uint32_t fe_get_top_sources(fe_context_t *ctx, fe_top_source_t *out, uint32_t ma
  * out must hold at least max_count entries. Returns number filled (0..max_count). */
 typedef struct fe_top_flow {
     sentinel_flow_key_t key;
+    uint8_t  ip_family;       /* 4 = IPv4, 6 = IPv6 */
+    char     src_ip_text[64]; /* canonical text for telemetry display */
+    char     dst_ip_text[64]; /* canonical text for telemetry display */
     uint64_t packets;
     uint64_t bytes;
     uint64_t last_seen_ns;

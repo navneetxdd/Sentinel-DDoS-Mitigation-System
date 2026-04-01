@@ -49,9 +49,9 @@ extern "C" {
 
 typedef struct de_thresholds {
     /* verdict thresholds: _Atomic so no torn reads between feedback thread and main. */
-    _Atomic double score_allow_max;   /* <= this  -> ALLOW   (default 0.3)  */
-    _Atomic double score_rate_limit; /* <= this  -> RATE_LIMIT (def 0.6)   */
-    _Atomic double score_drop;       /* <= this  -> DROP       (def 0.85)  */
+    _Atomic double score_allow_max;   /* <= this  -> ALLOW      (default 0.15)  */
+    _Atomic double score_rate_limit; /* <= this  -> RATE_LIMIT  (def 0.45)     */
+    _Atomic double score_drop;       /* <= this  -> DROP        (def 0.75)     */
     /* above score_drop -> QUARANTINE */
 
     /* EWMA parameters */
@@ -114,9 +114,9 @@ typedef struct de_thresholds {
 } de_thresholds_t;
 
 #define DE_THRESHOLDS_DEFAULT { \
-    .score_allow_max    = 0.30, \
-    .score_rate_limit   = 0.60, \
-    .score_drop         = 0.85, \
+    .score_allow_max    = 0.15, \
+    .score_rate_limit   = 0.45, \
+    .score_drop         = 0.75, \
     .ewma_smoothing     = 0.10, \
     .ewma_volume_sigma  = 3.0,  \
     .entropy_low_thresh = 0.20, \
@@ -133,13 +133,13 @@ typedef struct de_thresholds {
     .default_quarantine = 300,  \
     .weight_volume      = 0.12, \
     .weight_entropy     = 0.08, \
-    .weight_protocol    = 0.12, \
+    .weight_protocol    = 0.10, \
     .weight_behavioral  = 0.08, \
-    .weight_ml          = 0.35, \
+    .weight_ml          = 0.15, \
     .weight_l7          = 0.07, \
     .weight_anomaly     = 0.05, \
     .weight_chi_square  = 0.05, \
-    .weight_fanin       = 0.03, \
+    .weight_fanin       = 0.20, \
     .weight_signature   = 0.05, \
     .chi_square_thresh  = 50.0, \
     .fanin_distributed_thresh = 16.0, \

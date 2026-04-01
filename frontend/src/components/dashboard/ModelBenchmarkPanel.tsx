@@ -1,6 +1,20 @@
 import { cn } from "@/lib/utils";
 import type { BenchmarkReport } from "@/hooks/useModelBenchmarkReport";
-import { BarChart3, BrainCircuit, RefreshCw, ShieldCheck } from "lucide-react";
+import { BarChart3, BrainCircuit, RefreshCw, ShieldCheck, Info } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+
+const MODEL_INFO: Record<string, string> = {
+  random_forest:
+    "Ensemble of 100 decision trees, each trained on a bootstrapped sample. Outputs the average predicted attack probability across all trees. Selected as the runtime model because it balances accuracy with deterministic C-compiled inference via m2cgen. Used in real-time classification on every extracted feature vector when the ML activation gate is open.",
+  decision_tree:
+    "Single CART decision tree with max depth 12 and balanced class weights. Fast inference and fully exportable to C via m2cgen. Benchmarked as a lightweight alternative to Random Forest; can be swapped in as the runtime model by retraining with SENTINEL_RUNTIME_MODEL=decision_tree.",
+  isolation_forest:
+    "Unsupervised anomaly detector trained only on benign traffic. Scores how isolated each sample is in the feature space \u2014 attack traffic falls in sparse regions and receives high anomaly scores. Uses a calibrated decision threshold. Benchmarked for comparison; not used at runtime.",
+  xgboost:
+    "Gradient-boosted tree ensemble (XGBClassifier) with learning rate scheduling and early stopping. Generally achieves the highest accuracy but requires the xgboost library and cannot be compiled to a standalone C header. Benchmarked for comparison; not used at runtime.",
+  knn:
+    "K-Nearest Neighbors classifier (k=5, distance-weighted). Classifies each sample by majority vote of its 5 closest neighbors in scaled feature space. Non-parametric and makes no assumptions about data distribution. Benchmarked for comparison; not used at runtime.",
+};
 
 interface ModelBenchmarkPanelProps {
   report: BenchmarkReport | null;
@@ -23,6 +37,7 @@ export function ModelBenchmarkPanel({
   className,
 }: ModelBenchmarkPanelProps) {
   return (
+    <TooltipProvider>
     <div className={cn("cyber-card glow-border p-5 rounded-lg", className)}>
       <div className="flex items-center justify-between gap-3 mb-4">
         <div className="flex items-center gap-3">
@@ -86,6 +101,16 @@ export function ModelBenchmarkPanel({
                     <div className="flex items-center gap-2">
                       <BrainCircuit className={cn("w-4 h-4", (isRuntime || model.exported) ? "text-primary" : "text-muted-foreground")} />
                       <h4 className="font-semibold text-sm">{model.display_name}</h4>
+                      {MODEL_INFO[model.name] && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="w-3.5 h-3.5 text-muted-foreground/80 cursor-help flex-shrink-0" />
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="max-w-sm text-xs leading-relaxed">
+                            <p>{MODEL_INFO[model.name]}</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
                     </div>
                     {isRuntime ? (
                       <div className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
@@ -165,5 +190,6 @@ export function ModelBenchmarkPanel({
         </div>
       )}
     </div>
+    </TooltipProvider>
   );
 }

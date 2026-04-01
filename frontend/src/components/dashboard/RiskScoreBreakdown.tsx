@@ -34,70 +34,70 @@ interface RiskScoreBreakdownProps {
 const THREAT_COMPONENTS = [
   {
     name: "Volume Anomaly",
-    description: "Unusual spike in packets or bytes per second (EWMA baseline comparison)",
+    info: "Compares per-source PPS and BPS against an EWMA baseline. Fires when traffic deviates beyond 3\u03C3 of the running mean. Always active.",
     weight: 0.12,
     keyField: "volume_weight",
     scoreField: "score_volume",
   },
   {
     name: "Entropy Anomaly",
-    description: "Low entropy (repeated patterns) in ports or payload data",
+    info: "Measures Shannon entropy of source/destination ports and payload bytes. Low port entropy (below dynamic threshold) indicates flood traffic using fixed ports. High payload entropy flags randomized attack payloads. Active after 5+ packets per flow.",
     weight: 0.08,
     keyField: "entropy_weight",
     scoreField: "score_entropy",
   },
   {
     name: "Protocol Anomaly",
-    description: "SYN floods, UDP floods, DNS/NTP amplification, or reflection attacks",
-    weight: 0.12,
+    info: "Detects SYN floods (SYN ratio > 80%), RST storms, UDP/ICMP volumetric floods, and DNS/NTP amplification based on protocol-specific PPS thresholds. Always active.",
+    weight: 0.10,
     keyField: "protocol_weight",
     scoreField: "score_protocol",
   },
   {
     name: "Behavioral Anomaly",
-    description: "Port scans, slowloris, LAND attacks, or unusual flow patterns",
+    info: "Identifies port scanning (100+ unique destination ports), excessive concurrent flows per source (500+), LAND attacks (src=dst), slowloris patterns (low PPS but many TCP flows), and flood tools (very low inter-arrival times). Always active.",
     weight: 0.08,
     keyField: "behavioral_weight",
     scoreField: "score_behavioral",
   },
   {
     name: "ML Model",
-    description: "Machine learning decision tree ensemble inference",
-    weight: 0.35,
+    info: "Random Forest classifier (compiled to C via m2cgen) trained on 20 engineered features. Outputs attack probability passed through a sigmoid sharpening curve. Only activates when the baseline heuristic threat score exceeds 15%, gating false positives during benign traffic.",
+    weight: 0.15,
     keyField: "ml_weight",
     scoreField: "score_ml",
   },
   {
     name: "Layer 7 Asymmetry",
-    description: "HTTP GET floods, request-response size imbalance, application-layer patterns",
+    info: "Detects application-layer abuse: HTTP GET floods (high request count with small average packet size) and DNS query floods. Scores request-response size imbalance characteristic of amplification. Always active when HTTP/DNS traffic is present.",
     weight: 0.07,
     keyField: "l7_weight",
     scoreField: "score_l7",
   },
   {
     name: "Online Anomaly",
-    description: "Streaming multivariate anomaly detection over global traffic baseline",
+    info: "Streaming multivariate anomaly detector using a 6-dimensional EWMA model over global traffic features (PPS, BPS, SYN ratio, RST ratio, unique ports, flow count). Requires 64 observations to warm up, then scores deviations beyond 3.5\u03C3. Only learns from traffic with threat score below 0.35 to avoid poisoning.",
     weight: 0.05,
     keyField: "anomaly_weight",
     scoreField: "score_anomaly",
   },
   {
     name: "Chi-Square Concentration",
-    description: "Single-source traffic dominance test (volumetric DDoS detector)",
+    info: "Chi-square goodness-of-fit test comparing this source\u2019s PPS against the global average. High statistic means one IP dominates traffic \u2014 the signature of a single-source volumetric DDoS. Requires 8 classification samples to warm up.",
     weight: 0.05,
     keyField: "chi_square_weight",
     scoreField: "score_chi_square",
   },
   {
     name: "Fan-in Distribution",
-    description: "Distributed DDoS signature (many sources targeting one destination)",
-    weight: 0.03,
+    info: "Counts unique source IPs targeting each destination using a probabilistic sketch. High fan-in (many sources \u2192 one target) with elevated traffic is the defining signature of a distributed DDoS. Saturates at the configured threshold (default 16 unique sources). Always active.",
+    weight: 0.20,
     keyField: "fanin_weight",
     scoreField: "score_fanin",
   },
   {
     name: "Signature Match",
-    description: "Known reflection attack signatures (DNS, NTP, SSDP, etc.)",
+    info: "Pattern-matches known reflection/amplification attack signatures (DNS open-resolver responses, NTP monlist, SSDP, Memcached, CHARGEN, CLDAP) by inspecting source port, protocol, and packet size. Provides an additive boost to the threat score. Always active.",
     weight: 0.05,
     keyField: "signature_weight",
     scoreField: "score_signature",
@@ -174,21 +174,13 @@ export function RiskScoreBreakdown({
                             <TooltipTrigger asChild>
                               <Info className="w-3.5 h-3.5 text-muted-foreground/80 cursor-help" />
                             </TooltipTrigger>
-                            <TooltipContent side="top" className="max-w-xs">
-                              <p>{component.description}</p>
+                            <TooltipContent side="top" className="max-w-sm text-xs leading-relaxed">
+                              <p>{component.info}</p>
                             </TooltipContent>
                           </Tooltip>
                         </div>
-                        <div className="text-xs text-muted-foreground/70 mt-0.5 flex items-center gap-1.5">
-                          <span>{weight.toFixed(0)}% weight</span>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Info className="w-3.5 h-3.5 text-muted-foreground/80 cursor-help" />
-                            </TooltipTrigger>
-                            <TooltipContent side="top" className="max-w-xs">
-                              <p>How much this model contributes to the final risk score.</p>
-                            </TooltipContent>
-                          </Tooltip>
+                        <div className="text-xs text-muted-foreground/70 mt-0.5">
+                          <span>{Math.round(weight * 100)}% weight</span>
                         </div>
                       </div>
                       <div className="text-right">
@@ -219,12 +211,12 @@ export function RiskScoreBreakdown({
                     </div>
                   </div>
                 </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-xs">
+                <TooltipContent side="top" className="max-w-sm">
                   <div className="space-y-1">
                     <p className="font-semibold">{component.name}</p>
-                    <p className="text-xs">{component.description}</p>
+                    <p className="text-xs leading-relaxed">{component.info}</p>
                     <p className="text-xs text-muted-foreground/80 mt-2">
-                      {`Current score: ${(scoreBar).toFixed(1)}%`}
+                      {`Current score: ${(scoreBar).toFixed(1)}% · Weight: ${Math.round(weight * 100)}%`}
                     </p>
                   </div>
                 </TooltipContent>
@@ -248,19 +240,19 @@ export function RiskScoreBreakdown({
           </div>
           <div className="space-y-1.5 text-xs">
             <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">0 - 30%</span>
+              <span className="text-muted-foreground">0 - 15%</span>
               <span className="px-2 py-0.5 rounded bg-status-success/20 text-status-success font-semibold">ALLOW</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">30 - 60%</span>
+              <span className="text-muted-foreground">15 - 45%</span>
               <span className="px-2 py-0.5 rounded bg-status-warning/20 text-status-warning font-semibold">RATE LIMIT</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">60 - 85%</span>
+              <span className="text-muted-foreground">45 - 75%</span>
               <span className="px-2 py-0.5 rounded bg-status-warning/20 text-status-warning font-semibold">DROP</span>
             </div>
             <div className="flex justify-between items-center">
-              <span className="text-muted-foreground">85 - 100%</span>
+              <span className="text-muted-foreground">75 - 100%</span>
               <span className="px-2 py-0.5 rounded bg-status-danger/20 text-status-danger font-semibold">QUARANTINE</span>
             </div>
           </div>

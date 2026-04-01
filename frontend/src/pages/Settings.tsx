@@ -36,7 +36,6 @@ type SettingsState = {
   geminiApiKey: string;
   logRetention: string;
   analysisInterval: string;
-  modelFocus: string;
 };
 
 const SETTINGS_STORAGE_KEY = "sentinel-ui-settings-v1";
@@ -57,7 +56,6 @@ const DEFAULT_SETTINGS: SettingsState = {
   geminiApiKey: "",
   logRetention: "30",
   analysisInterval: "1",
-  modelFocus: "random_forest",
 };
 
 const loadStoredSettings = (): SettingsState => {
@@ -121,18 +119,6 @@ const Settings = () => {
 
   const [logRetention, setLogRetention] = useState(initialSettings.logRetention);
   const [analysisInterval, setAnalysisInterval] = useState(initialSettings.analysisInterval);
-  const [modelFocus, setModelFocus] = useState(initialSettings.modelFocus);
-
-  const modelOptions = useMemo(
-    () => [
-      { value: "random_forest", label: "Random Forest" },
-      { value: "xgboost", label: "XGBoost" },
-      { value: "decision_tree", label: "Decision Tree" },
-      { value: "knn", label: "KNN" },
-      { value: "isolation_forest", label: "Isolation Forest" },
-    ],
-    []
-  );
 
   const currentSettings: SettingsState = {
     synRateThreshold,
@@ -150,7 +136,6 @@ const Settings = () => {
     geminiApiKey,
     logRetention,
     analysisInterval,
-    modelFocus,
   };
 
   const applySettings = (settings: SettingsState) => {
@@ -169,7 +154,6 @@ const Settings = () => {
     setGeminiApiKey(settings.geminiApiKey);
     setLogRetention(settings.logRetention);
     setAnalysisInterval(settings.analysisInterval);
-    setModelFocus(settings.modelFocus);
   };
 
   const handleSave = () => {
@@ -264,9 +248,9 @@ const Settings = () => {
           className="mb-6"
         >
           <p className="text-xs text-muted-foreground mb-4">
-            Log retention, analysis interval, and benchmark focus are stored locally; the pipeline uses its own intervals. Runtime model deployment is still selected automatically by the training benchmark.
+            Log retention and analysis interval are stored locally; the pipeline uses its own intervals.
           </p>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-4">
               <SelectSetting
                 label="Log Retention"
@@ -294,15 +278,6 @@ const Settings = () => {
                   { value: "10", label: "10 seconds" },
                   { value: "30", label: "30 seconds" },
                 ]}
-              />
-            </div>
-            <div className="space-y-4">
-              <SelectSetting
-                label="Benchmark Focus"
-                description="Local UI preference only. Actual runtime deployment is selected automatically from measured benchmark accuracy and latency constraints."
-                value={modelFocus}
-                onValueChange={setModelFocus}
-                options={modelOptions}
               />
             </div>
           </div>

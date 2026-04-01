@@ -37,6 +37,11 @@ const DecisionEngine = () => {
   /* Derive classification from real feature_importance stream */
   const fi = ws.featureImportance;
   const threatScore = fi?.avg_threat_score ?? 0;
+  const baselineThreatScore = fi?.avg_baseline_threat_score ?? 0;
+  const mlActivationThreshold = fi?.ml_activation_threshold ?? 0.3;
+  const classificationsLast10s = fi?.classifications_last_10s ?? 0;
+  const mlActivatedLast10s = fi?.ml_activated_last_10s ?? 0;
+  const mlGateOpen = mlActivatedLast10s > 0;
   const attackProbability = Math.min(100, Math.round(threatScore * 100));
   const isDDoS = attackProbability >= 70 || simulatingDDoS;
   const isFlashCrowd = (attackProbability >= 30 && attackProbability < 70) || simulatingFlashCrowd;
@@ -62,16 +67,19 @@ const DecisionEngine = () => {
 
   /* Derive telemetry for AI Analyst */
   const pps = ws.metrics?.packets_per_sec ?? 0;
-  const currentProtocols = ws.metrics?.protocol_distribution || {};
-  let topProtocol = "Unknown";
-  let maxProtoRate = -1;
-  for (const [proto, count] of Object.entries(currentProtocols)) {
-    const c = count as number;
-    if (c > maxProtoRate) {
-      maxProtoRate = c;
-      topProtocol = proto;
-    }
-  }
+  const pd = ws.protocolDist;
+  const topProtocol = (() => {
+    if (!pd) return "Unknown";
+    const entries: [string, number][] = [
+      ["TCP", pd.tcp_percent],
+      ["UDP", pd.udp_percent],
+      ["ICMP", pd.icmp_percent],
+    ];
+    if (pd.icmpv6_percent != null) entries.push(["ICMPv6", pd.icmpv6_percent]);
+    if (pd.other_percent > 0) entries.push(["Other", pd.other_percent]);
+    const best = entries.reduce((a, b) => (b[1] > a[1] ? b : a), entries[0]);
+    return best[1] > 0 ? best[0] : "Unknown";
+  })();
 
   const aiTelemetry = {
     timestamp: new Date().toISOString(),
@@ -116,6 +124,41 @@ const DecisionEngine = () => {
             />
           }
         />
+
+        <Panel
+          title="Detection Mode"
+          description="Baseline gate and ML activation state"
+          variant={mlGateOpen ? "highlight" : "default"}
+        >
+          <div className="rounded-lg border border-border/60 bg-secondary/10 px-4 py-3 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">Current mode:</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-semibold ${mlGateOpen ? "bg-status-warning/15 text-status-warning" : "bg-status-success/15 text-status-success"}`}>
+                  {mlGateOpen ? "ML Active" : "Baseline Only"}
+                </span>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {mlGateOpen ? "ML turns on after baseline threshold is crossed." : "Baseline threshold not crossed yet."}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm">
+              <div className="rounded border border-border/40 px-3 py-2">
+                <span className="text-xs text-muted-foreground">Baseline score</span>
+                <div className="font-mono">{baselineThreatScore.toFixed(3)}</div>
+              </div>
+              <div className="rounded border border-border/40 px-3 py-2">
+                <span className="text-xs text-muted-foreground">ML activation threshold</span>
+                <div className="font-mono">{mlActivationThreshold.toFixed(2)}</div>
+              </div>
+              <div className="rounded border border-border/40 px-3 py-2">
+                <span className="text-xs text-muted-foreground">ML-used classifications (last 10 sec)</span>
+                <div className="font-mono">{mlActivatedLast10s} / {classificationsLast10s}</div>
+              </div>
+            </div>
+          </div>
+        </Panel>
 
         <Panel
           title="Classification And Explainability"

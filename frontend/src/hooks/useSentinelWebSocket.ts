@@ -61,6 +61,7 @@ export interface SentinelMetrics {
 export interface SentinelActivity {
   timestamp: number;
   src_ip: string;
+  ip_family?: string;
   action: string;
   attack_type: string;
   threat_score: number;
@@ -70,24 +71,28 @@ export interface SentinelActivity {
 
 export interface SentinelBlockedIP {
   ip: string;
+  ip_family?: string;
   rule_id: number;
   timestamp: number;
 }
 
 export interface SentinelRateLimitedIP {
   ip: string;
+  ip_family?: string;
   limit_pps: number;
   rule_id: number;
 }
 
 export interface SentinelMonitoredIP {
   ip: string;
+  ip_family?: string;
   rule_id: number;
   timestamp: number;
 }
 
 export interface SentinelWhitelistedIP {
   ip: string;
+  ip_family?: string;
 }
 
 export interface SentinelTrafficRate {
@@ -96,6 +101,7 @@ export interface SentinelTrafficRate {
   tcp_pps: number;
   udp_pps: number;
   icmp_pps: number;
+  icmpv6_pps?: number;
   other_pps: number;
 }
 
@@ -103,15 +109,19 @@ export interface SentinelProtocolDist {
   tcp_percent: number;
   udp_percent: number;
   icmp_percent: number;
+  icmpv6_percent?: number;
   other_percent: number;
   tcp_bytes: number;
   udp_bytes: number;
   icmp_bytes: number;
+  icmpv6_bytes?: number;
   other_bytes: number;
+  other_top_proto?: number;
 }
 
 export interface SentinelTopSource {
   ip: string;
+  ip_family?: string;
   packets: number;
   bytes: number;
   flows: number;
@@ -149,14 +159,30 @@ export interface SentinelFeatureImportance {
   avg_score_chi_square: number;
   avg_score_fanin: number;
   avg_score_signature: number;
+  avg_baseline_threat_score?: number;
+  ml_activation_threshold?: number;
+  classifications_last_10s?: number;
+  ml_activated_last_10s?: number;
 }
 
 export interface SentinelConnection {
   src: string;
   dst: string;
+  ip_family?: string;
   proto: number;
   packets: number;
   bytes: number;
+}
+
+export interface SentinelPacketEvent {
+  timestamp: number;
+  ip_family: string;
+  src_ip: string;
+  dst_ip: string;
+  protocol: number;
+  src_port: number;
+  dst_port: number;
+  packet_len: number;
 }
 
 export interface SentinelMitigationStatus {
@@ -250,12 +276,14 @@ export interface SentinelState {
   activitySyncFailures: number;
   /** Count of malformed WebSocket messages ignored (parse errors); >0 can indicate protocol or backend issues. */
   parseErrorCount: number;
+  packetEvents: SentinelPacketEvent[];
   sendCommand: (command: string, params?: Record<string, string>) => void;
   requestShapContributions: () => Promise<void>;
 }
 
 const MAX_ACTIVITY_LOG = 100;
 const MAX_TRAFFIC_HISTORY = 60;
+const MAX_PACKET_EVENTS = 200;
 const COMMAND_CONTRACT_VERSION = 1;
 const TELEMETRY_SCHEMA_VERSION = 1;
 const ACTIVITY_BATCH_MAX = 50;
@@ -339,6 +367,7 @@ function useSentinelWebSocketState(): SentinelState {
   const [explainApiReachable, setExplainApiReachable] = useState<boolean | null>(null);
   const [activitySyncFailures, setActivitySyncFailures] = useState(0);
   const [parseErrorCount, setParseErrorCount] = useState(0);
+  const [packetEvents, setPacketEvents] = useState<SentinelPacketEvent[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -403,118 +432,155 @@ function useSentinelWebSocketState(): SentinelState {
     }
   }, [flushActivityBatch]);
 
-  const handleMessage = useCallback((event: MessageEvent) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (!msg.type || msg.data === undefined) return;
+  /* ---- RAF-batched message processing ----
+   * Instead of calling setState per WebSocket message (which at 5k+ PPS
+   * causes hundreds of React renders per second), we buffer all messages
+   * arriving within one animation frame (~16ms) and apply them in a single
+   * batch.  Snapshot-type streams keep only the latest value; event-type
+   * streams (activity_logs, packet_events) are accumulated into one setState. */
+  const msgQueueRef = useRef<string[]>([]);
+  const rafIdRef = useRef<number>(0);
 
-      const schemaVersion = typeof msg.schema_version === "number" ? msg.schema_version : null;
-      setTelemetrySchemaVersion(schemaVersion);
-      if (schemaVersion !== TELEMETRY_SCHEMA_VERSION) {
-        setTelemetrySchemaMismatch(true);
-        setTelemetrySchemaError(
-          `Unsupported telemetry schema_version=${schemaVersion ?? "missing"}. Expected ${TELEMETRY_SCHEMA_VERSION}.`,
-        );
-        return;
+  const flushMessageQueue = useCallback(() => {
+    rafIdRef.current = 0;
+    const queue = msgQueueRef.current;
+    if (queue.length === 0) return;
+    msgQueueRef.current = [];
+
+    type ParsedMsg = { type: string; data: unknown; schema_version?: number };
+    const valid: ParsedMsg[] = [];
+    let parseErrors = 0;
+    let sawMismatch = false;
+
+    for (const raw of queue) {
+      try {
+        const msg = JSON.parse(raw);
+        if (!msg.type || msg.data === undefined) continue;
+        const sv = typeof msg.schema_version === "number" ? msg.schema_version : null;
+        if (sv !== TELEMETRY_SCHEMA_VERSION) { sawMismatch = true; continue; }
+        valid.push(msg);
+      } catch {
+        parseErrors++;
       }
-      setTelemetrySchemaMismatch(false);
-      setTelemetrySchemaError(null);
+    }
 
+    if (parseErrors > 0) {
+      setParseErrorCount(n => n + parseErrors);
+      if (import.meta.env.DEV) console.warn(`[Sentinel WS] ${parseErrors} malformed message(s) ignored`);
+    }
+    if (sawMismatch) {
+      setTelemetrySchemaMismatch(true);
+      setTelemetrySchemaError(`Unsupported telemetry schema_version. Expected ${TELEMETRY_SCHEMA_VERSION}.`);
+    }
+    if (valid.length === 0) return;
+    setTelemetrySchemaMismatch(false);
+    setTelemetrySchemaError(null);
+    const lastSV = typeof valid[valid.length - 1].schema_version === "number"
+      ? valid[valid.length - 1].schema_version! : null;
+    setTelemetrySchemaVersion(lastSV);
+
+    const snapshots = new Map<string, unknown>();
+    const activityBatch: SentinelActivity[] = [];
+    const packetBatch: SentinelPacketEvent[] = [];
+    const commandResults: SentinelCommandResult[] = [];
+
+    for (const msg of valid) {
       switch (msg.type) {
+        case "activity_logs":  activityBatch.push(msg.data as SentinelActivity); break;
+        case "packet_events":  packetBatch.push(msg.data as SentinelPacketEvent); break;
+        case "command_result":
+          if (isCommandResultLike(msg.data)) commandResults.push(msg.data);
+          break;
+        default: snapshots.set(msg.type, msg.data); break;
+      }
+    }
+
+    for (const [type, data] of snapshots) {
+      switch (type) {
         case "metrics":
-          if (isMetricsLike(msg.data)) setMetrics(msg.data);
+          if (isMetricsLike(data)) setMetrics(data);
           break;
-
-        case "activity_logs":
-          setActivityLog((prev) => {
-            const entry = msg.data as SentinelActivity;
-            queueActivityForSync(entry);
-            const next = [entry, ...prev];
-            return next.length > MAX_ACTIVITY_LOG ? next.slice(0, MAX_ACTIVITY_LOG) : next;
-          });
-          break;
-
         case "blocked_ips":
-          setBlockedIPs(Array.isArray(msg.data) ? msg.data : []);
+          setBlockedIPs(Array.isArray(data) ? data : []);
           break;
-
         case "rate_limited_ips":
-          setRateLimitedIPs(Array.isArray(msg.data) ? msg.data : []);
+          setRateLimitedIPs(Array.isArray(data) ? data : []);
           break;
-
         case "monitored_ips":
-          setMonitoredIPs(Array.isArray(msg.data) ? msg.data : []);
+          setMonitoredIPs(Array.isArray(data) ? data : []);
           break;
-
         case "whitelisted_ips":
-          setWhitelistedIPs(Array.isArray(msg.data) ? msg.data : []);
+          setWhitelistedIPs(Array.isArray(data) ? data : []);
           break;
-
         case "traffic_rate": {
-          const rate = msg.data as SentinelTrafficRate;
+          const rate = data as SentinelTrafficRate;
           setTrafficRate(rate);
-          setTrafficHistory((prev) => {
+          setTrafficHistory(prev => {
             const point: TrafficDataPoint = {
               time: new Date().toLocaleTimeString("en-US", {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
+                hour: "2-digit", minute: "2-digit", second: "2-digit",
               }),
               packets: rate.total_pps,
             };
             const next = [...prev, point];
             return next.length > MAX_TRAFFIC_HISTORY
-              ? next.slice(next.length - MAX_TRAFFIC_HISTORY)
-              : next;
+              ? next.slice(next.length - MAX_TRAFFIC_HISTORY) : next;
           });
           break;
         }
-
         case "protocol_distribution":
-          setProtocolDist(msg.data as SentinelProtocolDist);
+          setProtocolDist(data as SentinelProtocolDist);
           break;
-
         case "top_sources":
-          setTopSources(Array.isArray(msg.data) ? msg.data : []);
+          setTopSources(Array.isArray(data) ? data : []);
           break;
-
         case "feature_importance":
-          setFeatureImportance(msg.data as SentinelFeatureImportance);
+          setFeatureImportance(data as SentinelFeatureImportance);
           break;
-
         case "feature_vector":
-          setFeatureVector(Array.isArray(msg.data) ? msg.data : null);
+          setFeatureVector(Array.isArray(data) ? data : null);
           break;
-
         case "active_connections":
-          setConnections(Array.isArray(msg.data) ? msg.data : []);
+          setConnections(Array.isArray(data) ? data : []);
           break;
-
         case "mitigation_status":
-          if (isMitigationStatusLike(msg.data)) setMitigationStatus(msg.data);
+          if (isMitigationStatusLike(data)) setMitigationStatus(data);
           break;
-
         case "integration_status":
-          setIntegrationStatus(msg.data as SentinelIntegrationStatus);
+          setIntegrationStatus(data as SentinelIntegrationStatus);
           break;
-
-        case "command_result": {
-          if (!isCommandResultLike(msg.data)) break;
-          const data = msg.data;
-          if (shouldApplyCommandResult(data, lastSentRequestIdRef.current)) {
-            setLastCommandResult(data);
-          }
-          break;
-        }
-      }
-    } catch (err) {
-      setParseErrorCount((n) => n + 1);
-      if (import.meta.env.DEV) {
-        const preview = typeof event?.data === "string" ? event.data.slice(0, 100) : "";
-        console.warn("[Sentinel WS] Malformed message ignored", preview || err);
       }
     }
+
+    if (activityBatch.length > 0) {
+      for (const entry of activityBatch) queueActivityForSync(entry);
+      setActivityLog(prev => {
+        const next = [...[...activityBatch].reverse(), ...prev];
+        return next.length > MAX_ACTIVITY_LOG ? next.slice(0, MAX_ACTIVITY_LOG) : next;
+      });
+    }
+
+    if (packetBatch.length > 0) {
+      setPacketEvents(prev => {
+        const next = [...[...packetBatch].reverse(), ...prev];
+        return next.length > MAX_PACKET_EVENTS ? next.slice(0, MAX_PACKET_EVENTS) : next;
+      });
+    }
+
+    if (commandResults.length > 0) {
+      const lastApplicable = [...commandResults].reverse().find(cr =>
+        shouldApplyCommandResult(cr, lastSentRequestIdRef.current)
+      );
+      if (lastApplicable) setLastCommandResult(lastApplicable);
+    }
   }, [queueActivityForSync]);
+
+  const onWsMessage = useCallback((event: MessageEvent) => {
+    msgQueueRef.current.push(event.data as string);
+    if (!rafIdRef.current) {
+      rafIdRef.current = requestAnimationFrame(flushMessageQueue);
+    }
+  }, [flushMessageQueue]);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -557,7 +623,7 @@ function useSentinelWebSocketState(): SentinelState {
         ws.close();
       };
 
-      ws.onmessage = handleMessage;
+      ws.onmessage = onWsMessage;
       wsRef.current = ws;
     } catch {
       consecutiveConnectFailuresRef.current += 1;
@@ -569,12 +635,16 @@ function useSentinelWebSocketState(): SentinelState {
       reconnectTimerRef.current = setTimeout(connect, delay);
       reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS);
     }
-  }, [handleMessage]);
+  }, [onWsMessage]);
 
   useEffect(() => {
     connect();
 
     return () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = 0;
+      }
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }
@@ -728,6 +798,7 @@ function useSentinelWebSocketState(): SentinelState {
     explainApiReachable,
     activitySyncFailures,
     parseErrorCount,
+    packetEvents,
     blockedIPs,
     rateLimitedIPs,
     monitoredIPs,

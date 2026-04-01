@@ -5,6 +5,7 @@ import { TrafficChart } from "@/components/dashboard/TrafficChart";
 import { ProtocolChart } from "@/components/dashboard/ProtocolChart";
 import { TopIPsTable } from "@/components/dashboard/TopIPsTable";
 import { ActiveConnectionsTable } from "@/components/dashboard/ActiveConnectionsTable";
+import { PacketEvidenceTable } from "@/components/dashboard/PacketEvidenceTable";
 import { StatusBadge, StatusType } from "@/components/dashboard/StatusBadge";
 import { useSentinelWebSocket } from "@/hooks/useSentinelWebSocket";
 import { useModelBenchmarkReport } from "@/hooks/useModelBenchmarkReport";
@@ -81,6 +82,14 @@ const TrafficAnalysis = () => {
           <ActiveConnectionsTable connections={ws.connections} />
         </Panel>
 
+        <Panel
+          title="Packet evidence"
+          description="Sampled packets from the pipeline for parity checks (stream is rate-limited for UI stability)"
+          variant="default"
+        >
+          <PacketEvidenceTable events={ws.packetEvents} />
+        </Panel>
+
         <div>
           <h2 className="text-lg font-semibold mb-4">Traffic Telemetry</h2>
           <GridLayout cols={4} gap="md">
@@ -122,7 +131,7 @@ const TrafficAnalysis = () => {
             <StatCard
               label="Distributed Evidence"
               value={`${Math.round(faninScore * 100)}%`}
-              unit={`weight ${(faninWeight * 100).toFixed(0)}%`}
+              unit={`weight ${Math.round(faninWeight * 100)}%`}
               icon={<Layers className="w-5 h-5" />}
               variant={faninScore >= 0.7 ? "danger" : faninScore >= 0.3 ? "warning" : "success"}
             />
@@ -135,7 +144,7 @@ const TrafficAnalysis = () => {
             />
             <StatCard
               label="Chi-Square Weight"
-              value={`${(chiSquareWeight * 100).toFixed(0)}%`}
+              value={`${Math.round(chiSquareWeight * 100)}%`}
               unit="heuristic"
               icon={<Gauge className="w-5 h-5" />}
               variant="default"
